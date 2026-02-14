@@ -1,0 +1,333 @@
+{
+  "extensionName": {
+    "message": "TreeClip 文本批量选择器"
+  },
+  "extensionDescription": {
+    "message": "强大的文本批量选择工具，用Shift+点击/框选/F键/搜索轻松选择多个元素，提取文本内容。结合层级导航、内部元素选择、层级绑定、自定义输出格式等功能，提升文本复制效率。"
+  },
+  "actionTitle": {
+    "message": "TreeClip 文本批量选择器"
+  },
+  "msg_copied": {
+    "message": "已复制选中内容到剪贴板"
+  },
+  "msg_copy_failed": {
+    "message": "复制到剪贴板失败"
+  },
+  "msg_no_content": {
+    "message": "没有内容可复制"
+  },
+  "prompt_batch_select": {
+    "message": "检测到相同元素"
+  },
+  "prompt_batch_select_desc": {
+    "message": "是否批量选择所有 $DESC$ 元素？",
+    "placeholders": {
+      "desc": {
+        "content": "$1"
+      }
+    }
+  },
+  "btn_select_all": {
+    "message": "全选"
+  },
+  "btn_cancel": {
+    "message": "取消"
+  },
+  "checkbox_dont_show": {
+    "message": "不再提示"
+  },
+  "msg_select_at_least_one": {
+    "message": "请先选择至少一个元素，$KEY$键将选择所有相同类型元素",
+    "placeholders": {
+      "key": {
+        "content": "$1"
+      }
+    }
+  },
+  "msg_no_internal_elements": {
+    "message": "该元素没有可选择的子元素"
+  },
+  "tip_internal_links": {
+    "message": "🔍 检测到内部链接"
+  },
+  "tip_internal_links_desc": {
+    "message": "该选择器在当前元素中找到了唯一的链接子元素"
+  },
+  "btn_view_internal_links": {
+    "message": "查看内部链接"
+  },
+  "popup_instruction_desc": {
+    "message": "网页元素启用选择器"
+  },
+  "popup_feature_click": {
+    "message": "点选：按住Shift点击选择单个元素"
+  },
+  "popup_feature_batch": {
+    "message": "批量：选中后按F键批量选择同类元素"
+  },
+  "popup_feature_rect": {
+    "message": "框选：按住Shift拖动鼠标选择区域"
+  },
+  "popup_feature_search": {
+    "message": "文本搜索：支持通配符模式搜索"
+  },
+  "popup_feature_clean": {
+    "message": "文本清理：自定义输出格式与清理选项"
+  },
+  "popup_shortcuts_title": {
+    "message": "常用快捷键"
+  },
+  "popup_search_tips_title": {
+    "message": "搜索语法提示"
+  },
+  "popup_shortcut_click": {
+    "message": "选择或取消选择单个元素。"
+  },
+  "popup_shortcut_drag": {
+    "message": "绘制矩形框进行框选。"
+  },
+  "popup_shortcut_type": {
+    "message": "取消选择整个类型的元素。"
+  },
+  "popup_shortcut_esc": {
+    "message": "清除所有选择，退出选择模式。"
+  },
+  "popup_shortcut_f": {
+    "message": "选择所有类型相同的元素。"
+  },
+  "popup_shortcut_nav": {
+    "message": "层级导航"
+  },
+  "popup_shortcut_internal": {
+    "message": "进/出内部元素"
+  },
+  "popup_shortcut_binding": {
+    "message": "层级绑定，将后续选择范围精确限定在该父层级下。"
+  },
+  "popup_search_any": {
+    "message": "匹配任意多个字符"
+  },
+  "popup_search_single": {
+    "message": "匹配单个字符"
+  },
+  "popup_search_list": {
+    "message": "匹配括号内任一项"
+  },
+  "popup_search_literal": {
+    "message": "按字面文本匹配"
+  },
+  "ui_selected_count": {
+    "message": "已选择 $COUNT$ 个元素",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "ui_selected_elements": {
+    "message": "已选择元素"
+  },
+  "ui_click_to_expand": {
+    "message": "点击展开"
+  },
+  "ui_hierarchy": {
+    "message": "元素层级"
+  },
+  "ui_collapse": {
+    "message": "折叠"
+  },
+  "ui_expand": {
+    "message": "展开"
+  },
+  "ui_omit_levels": {
+    "message": "省略 $COUNT$ 层",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "ui_current": {
+    "message": "当前"
+  },
+  "ui_match": {
+    "message": "匹配"
+  },
+  "ui_bottom": {
+    "message": "底"
+  },
+  "ui_top": {
+    "message": "顶"
+  },
+  "ui_viewing_internal": {
+    "message": "正在浏览元素内部内容"
+  },
+  "ui_internal_elements": {
+    "message": "内部元素"
+  },
+  "ui_click_to_select": {
+    "message": "点击选择"
+  },
+  "ui_internal_desc": {
+    "message": "选择内部元素将仅更改当前元素组"
+  },
+  "ui_shortcut_nav_hint": {
+    "message": "快捷键: Shift+← 返回父元素, ESC 取消"
+  },
+  "ui_btn_back": {
+    "message": "返回"
+  },
+  "ui_btn_cancel": {
+    "message": "取消"
+  },
+  "ui_btn_copy": {
+    "message": "复制"
+  },
+  "ui_current_selector": {
+    "message": "当前选择器"
+  },
+  "ui_output_settings": {
+    "message": "输出设置"
+  },
+  "ui_clipboard_sep": {
+    "message": "剪贴板分隔方式"
+  },
+  "ui_sep_newline": {
+    "message": "换行"
+  },
+  "ui_sep_space": {
+    "message": "空格"
+  },
+  "ui_sep_comma": {
+    "message": "逗号"
+  },
+  "ui_clean_options": {
+    "message": "文本清理选项"
+  },
+  "ui_clean_spaces": {
+    "message": "文本空格"
+  },
+  "ui_clean_code": {
+    "message": "代码"
+  },
+  "ui_clean_symbols": {
+    "message": "符号"
+  },
+  "ui_clean_english": {
+    "message": "英文"
+  },
+  "ui_clean_chinese": {
+    "message": "中文"
+  },
+  "ui_clean_numbers": {
+    "message": "数字"
+  },
+  "ui_clean_duplicates": {
+    "message": "去除重复项"
+  },
+  "ui_realtime_copy": {
+    "message": "实时复制"
+  },
+  "ui_realtime_copy_desc": {
+    "message": "实时复制到剪贴板"
+  },
+  "ui_search_title": {
+    "message": "文本/模式搜索"
+  },
+  "ui_search_help": {
+    "message": "模式搜索语法:\n* - 匹配任意数量的字符 (例如: 数据*分析)\n? - 匹配单个字符 (例如: 第?章)\n[a,b,c] - 匹配括号内任一项 (例如: [1,2,3,10])\n\"...\" - 引号内的语法字符按实际匹配 (例如: \"[1,2]\"匹配[1,2])"
+  },
+  "ui_search_input_placeholder": {
+    "message": "输入文本或模式 (* = 多个, ? = 单个)"
+  },
+  "ui_search_btn": {
+    "message": "搜索"
+  },
+  "ui_search_prev": {
+    "message": "前一项"
+  },
+  "ui_search_next": {
+    "message": "后一项"
+  },
+  "ui_search_add_all": {
+    "message": "添加到选择"
+  },
+  "ui_btn_internal": {
+    "message": "内部元素"
+  },
+  "ui_btn_guide": {
+    "message": "操作指南"
+  },
+  "ui_btn_shortcuts": {
+    "message": "快捷键"
+  },
+  "ui_btn_minimize": {
+    "message": "收起"
+  },
+  "ui_selected": {
+    "message": "已选元素"
+  },
+  "ui_current_element": {
+    "message": "当前元素"
+  },
+  "ui_copy_title": {
+    "message": "复制选中内容 (Ctrl+C)"
+  },
+  "ui_shortcuts_config": {
+    "message": "快捷键配置"
+  },
+  "ui_select_key": {
+    "message": "选择键"
+  },
+  "ui_conflict_warning": {
+    "message": "⚠️ 与其他快捷键冲突"
+  },
+  "ui_select_key_desc": {
+    "message": "用于\"选择键+点击/框选\"等操作；<br>层级绑定/层级元素切换仍与Shift配合"
+  },
+  "ui_type_select_key": {
+    "message": "选择相同类型键"
+  },
+  "ui_type_select_key_desc": {
+    "message": "用于选择所有相同类型元素"
+  },
+  "ui_copy_key": {
+    "message": "复制组合键"
+  },
+  "ui_copy_key_desc": {
+    "message": "用于复制所有选中内容"
+  },
+  "ui_reset_defaults": {
+    "message": "恢复默认"
+  },
+  "ui_save": {
+    "message": "保存"
+  },
+  "ui_press_keys_to_capture": {
+    "message": "同时按下组合键...(按Enter结束)"
+  },
+  "ui_saved": {
+    "message": "已保存"
+  },
+  "ui_saved_success": {
+    "message": "已保存成功"
+  },
+  "ui_no_changes": {
+    "message": "无更改"
+  },
+  "ui_no_results": {
+    "message": "无结果"
+  },
+  "ui_search_result_count": {
+    "message": "结果 $CURRENT$ / $TOTAL$",
+    "placeholders": {
+      "current": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
+    }
+  }
+}

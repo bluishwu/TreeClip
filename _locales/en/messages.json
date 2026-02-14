@@ -1,0 +1,333 @@
+{
+  "extensionName": {
+    "message": "TreeClip - Batch Text Selector"
+  },
+  "extensionDescription": {
+    "message": "Powerful batch text selection tool. Use Shift+Click/Rect Select/F Key/Search to easily select multiple elements and extract text. Features hierarchy navigation, internal element selection, hierarchy binding, and custom output formats."
+  },
+  "actionTitle": {
+    "message": "TreeClip - Batch Text Selector"
+  },
+  "msg_copied": {
+    "message": "Copied selected content to clipboard"
+  },
+  "msg_copy_failed": {
+    "message": "Failed to copy to clipboard"
+  },
+  "msg_no_content": {
+    "message": "No content to copy"
+  },
+  "prompt_batch_select": {
+    "message": "Similar elements detected"
+  },
+  "prompt_batch_select_desc": {
+    "message": "Batch select all $DESC$ elements?",
+    "placeholders": {
+      "desc": {
+        "content": "$1"
+      }
+    }
+  },
+  "btn_select_all": {
+    "message": "Select All"
+  },
+  "btn_cancel": {
+    "message": "Cancel"
+  },
+  "checkbox_dont_show": {
+    "message": "Don't show again"
+  },
+  "msg_select_at_least_one": {
+    "message": "Select at least one element first. $KEY$ key will select all similar elements.",
+    "placeholders": {
+      "key": {
+        "content": "$1"
+      }
+    }
+  },
+  "msg_no_internal_elements": {
+    "message": "This element has no selectable child elements"
+  },
+  "tip_internal_links": {
+    "message": "🔍 Internal links detected"
+  },
+  "tip_internal_links_desc": {
+    "message": "This selector found a unique link child element in the current element"
+  },
+  "btn_view_internal_links": {
+    "message": "View internal links"
+  },
+  "popup_instruction_desc": {
+    "message": "to enable selector"
+  },
+  "popup_feature_click": {
+    "message": "Click: Shift+Click to select single element"
+  },
+  "popup_feature_batch": {
+    "message": "Batch: Press F after selecting to select similar"
+  },
+  "popup_feature_rect": {
+    "message": "Rect: Shift+Drag to select area"
+  },
+  "popup_feature_search": {
+    "message": "Search: Supports wildcard pattern search"
+  },
+  "popup_feature_clean": {
+    "message": "Clean: Custom output formats and cleaning"
+  },
+  "popup_shortcuts_title": {
+    "message": "Common Shortcuts"
+  },
+  "popup_search_tips_title": {
+    "message": "Search Syntax Tips"
+  },
+  "popup_shortcut_click": {
+    "message": "Select/deselect single element."
+  },
+  "popup_shortcut_drag": {
+    "message": "Draw rectangle to select area."
+  },
+  "popup_shortcut_type": {
+    "message": "Deselect whole element type."
+  },
+  "popup_shortcut_esc": {
+    "message": "Clear all selections and exit."
+  },
+  "popup_shortcut_f": {
+    "message": "Select all similar elements."
+  },
+  "popup_shortcut_nav": {
+    "message": "Hierarchy navigation"
+  },
+  "popup_shortcut_internal": {
+    "message": "Enter/Exit internal elements"
+  },
+  "popup_shortcut_binding": {
+    "message": "Hierarchy binding, limit selection to this parent."
+  },
+  "popup_search_any": {
+    "message": "Match any number of characters"
+  },
+  "popup_search_single": {
+    "message": "Match single character"
+  },
+  "popup_search_list": {
+    "message": "Match any item in brackets"
+  },
+  "popup_search_literal": {
+    "message": "Match text literally"
+  },
+  "ui_selected_count": {
+    "message": "$COUNT$ elements selected",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "ui_selected_elements": {
+    "message": "Selected"
+  },
+  "ui_click_to_expand": {
+    "message": "Expand"
+  },
+  "ui_hierarchy": {
+    "message": "Hierarchy"
+  },
+  "ui_collapse": {
+    "message": "Collapse"
+  },
+  "ui_expand": {
+    "message": "Expand"
+  },
+  "ui_omit_levels": {
+    "message": "Omit $COUNT$ levels",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "ui_current": {
+    "message": "Current"
+  },
+  "ui_match": {
+    "message": "Match"
+  },
+  "ui_bottom": {
+    "message": "Bot"
+  },
+  "ui_top": {
+    "message": "Top"
+  },
+  "ui_viewing_internal": {
+    "message": "Viewing internal content"
+  },
+  "ui_internal_elements": {
+    "message": "Internal Elements"
+  },
+  "ui_click_to_select": {
+    "message": "Click to Select"
+  },
+  "ui_internal_desc": {
+    "message": "Selecting internal elements will only change current group"
+  },
+  "ui_shortcut_nav_hint": {
+    "message": "Shortcuts: Shift+← Back, ESC Cancel"
+  },
+  "ui_btn_back": {
+    "message": "Back"
+  },
+  "ui_btn_cancel": {
+    "message": "Cancel"
+  },
+  "ui_btn_copy": {
+    "message": "Copy"
+  },
+  "ui_current_selector": {
+    "message": "Selector"
+  },
+  "ui_output_settings": {
+    "message": "Output Settings"
+  },
+  "ui_clipboard_sep": {
+    "message": "Clipboard Separator"
+  },
+  "ui_sep_newline": {
+    "message": "Newline"
+  },
+  "ui_sep_space": {
+    "message": "Space"
+  },
+  "ui_sep_comma": {
+    "message": "Comma"
+  },
+  "ui_clean_options": {
+    "message": "Text Cleaning"
+  },
+  "ui_clean_spaces": {
+    "message": "Spaces"
+  },
+  "ui_clean_code": {
+    "message": "Code"
+  },
+  "ui_clean_symbols": {
+    "message": "Symbols"
+  },
+  "ui_clean_english": {
+    "message": "English"
+  },
+  "ui_clean_chinese": {
+    "message": "Chinese"
+  },
+  "ui_clean_numbers": {
+    "message": "Numbers"
+  },
+  "ui_clean_duplicates": {
+    "message": "Remove Duplicates"
+  },
+  "ui_realtime_copy": {
+    "message": "Real-time"
+  },
+  "ui_realtime_copy_desc": {
+    "message": "Auto-copy to clipboard"
+  },
+  "ui_search_title": {
+    "message": "Text/Pattern Search"
+  },
+  "ui_search_help": {
+    "message": "Search Syntax:\n* - Match any number of chars (e.g. data*analysis)\n? - Match single char (e.g. page?)\n[a,b,c] - Match any in brackets (e.g. [1,2,3])\n\"...\" - Match literally (e.g. \"[1,2]\")"
+  },
+  "ui_search_input_placeholder": {
+    "message": "Enter text or pattern (*=any, ?=single)"
+  },
+  "ui_search_btn": {
+    "message": "Search"
+  },
+  "ui_search_prev": {
+    "message": "Prev"
+  },
+  "ui_search_next": {
+    "message": "Next"
+  },
+  "ui_search_add_all": {
+    "message": "Add All"
+  },
+  "ui_btn_internal": {
+    "message": "Internal"
+  },
+  "ui_btn_guide": {
+    "message": "Guide"
+  },
+  "ui_btn_shortcuts": {
+    "message": "Keys"
+  },
+  "ui_btn_minimize": {
+    "message": "Min"
+  },
+  "ui_selected": {
+    "message": "Selected"
+  },
+  "ui_current_element": {
+    "message": "Current"
+  },
+  "ui_copy_title": {
+    "message": "Copy selected content (Ctrl+C)"
+  },
+  "ui_shortcuts_config": {
+    "message": "Shortcuts Config"
+  },
+  "ui_select_key": {
+    "message": "Select Key"
+  },
+  "ui_conflict_warning": {
+    "message": "⚠️ Conflict with other shortcuts"
+  },
+  "ui_select_key_desc": {
+    "message": "Used for \"Select Key + Click/Drag\";<br>Hierarchy binding still uses Shift"
+  },
+  "ui_type_select_key": {
+    "message": "Select Similar Key"
+  },
+  "ui_type_select_key_desc": {
+    "message": "Used to select all similar elements"
+  },
+  "ui_copy_key": {
+    "message": "Copy Shortcut"
+  },
+  "ui_copy_key_desc": {
+    "message": "Used to copy all selected content"
+  },
+  "ui_reset_defaults": {
+    "message": "Reset Defaults"
+  },
+  "ui_save": {
+    "message": "Save"
+  },
+  "ui_press_keys_to_capture": {
+    "message": "Press key combination... (Enter to finish)"
+  },
+  "ui_saved": {
+    "message": "Saved"
+  },
+  "ui_saved_success": {
+    "message": "Saved successfully"
+  },
+  "ui_no_changes": {
+    "message": "No changes"
+  },
+  "ui_no_results": {
+    "message": "No results"
+  },
+  "ui_search_result_count": {
+    "message": "Result $CURRENT$ / $TOTAL$",
+    "placeholders": {
+      "current": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
+    }
+  }
+}

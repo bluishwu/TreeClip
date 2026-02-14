@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TreeClip 文本批量选择器</title>
+    <title data-i18n="extensionName">TreeClip 文本批量选择器</title>
     <style>
         body {
             font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
@@ -70,39 +70,40 @@
 </head>
 <body>
     <div class="container">
-        <h2>TreeClip 文本批量选择器</h2>
+        <h2 data-i18n="extensionName">TreeClip 文本批量选择器</h2>
 
         <div class="instruction">
-            <span class="key">Shift</span> + <strong>点击/框选</strong> 网页元素启用选择器
+            <span class="key">Shift</span> + <strong data-i18n="popup_instruction_desc">点击/框选 网页元素启用选择器</strong>
         </div>
 
         <div class="feature-list">
-            <div class="feature-item">点选：按住Shift点击选择单个元素</div>
-            <div class="feature-item">批量：选中后按F键批量选择同类元素</div>
-            <div class="feature-item">框选：按住Shift拖动鼠标选择区域</div>
-            <div class="feature-item">文本搜索：支持通配符模式搜索</div>
-            <div class="feature-item">文本清理：自定义输出格式与清理选项</div>
+            <div class="feature-item" data-i18n="popup_feature_click">点选：按住Shift点击选择单个元素</div>
+            <div class="feature-item" data-i18n="popup_feature_batch">批量：选中后按F键批量选择同类元素</div>
+            <div class="feature-item" data-i18n="popup_feature_rect">框选：按住Shift拖动鼠标选择区域</div>
+            <div class="feature-item" data-i18n="popup_feature_search">文本搜索：支持通配符模式搜索</div>
+            <div class="feature-item" data-i18n="popup_feature_clean">文本清理：自定义输出格式与清理选项</div>
         </div>
 
         <div class="feature-list" style="margin-top: 10px;">
-            <h3 style="font-size: 14px; color: #555; margin-bottom: 5px;">常用快捷键</h3>
-            <div class="feature-item"><code>Shift + 鼠标点击</code>: 选择或取消选择单个元素。</div>
-            <div class="feature-item"><code>Shift + 鼠标拖拽</code>: 绘制矩形框进行框选。</div>
-            <div class="feature-item"><code>Shift + 点击类型标签</code>: 取消选择整个类型的元素。</div>
-            <div class="feature-item"><code>Esc</code>: 清除所有选择，退出选择模式。</div>
-            <div class="feature-item"><code>F</code>: 选择所有类型相同的元素。</div>
-            <div class="feature-item"><code>Shift+↑/↓</code>: 层级导航</div>
-            <div class="feature-item"><code>Shift+→/←</code>: 进/出内部元素</div>
-            <div class="feature-item"><code>Shift+点击层级</code>: 层级绑定，将后续选择范围精确限定在该父层级下。</div>
+            <h3 style="font-size: 14px; color: #555; margin-bottom: 5px;" data-i18n="popup_shortcuts_title">常用快捷键</h3>
+            <div class="feature-item"><code>Shift + Click</code>: <span data-i18n="popup_shortcut_click">选择或取消选择单个元素。</span></div>
+            <div class="feature-item"><code>Shift + Drag</code>: <span data-i18n="popup_shortcut_drag">绘制矩形框进行框选。</span></div>
+            <div class="feature-item"><code>Shift + Click Label</code>: <span data-i18n="popup_shortcut_type">取消选择整个类型的元素。</span></div>
+            <div class="feature-item"><code>Esc</code>: <span data-i18n="popup_shortcut_esc">清除所有选择，退出选择模式。</span></div>
+            <div class="feature-item"><code>F</code>: <span data-i18n="popup_shortcut_f">选择所有类型相同的元素。</span></div>
+            <div class="feature-item"><code>Shift+↑/↓</code>: <span data-i18n="popup_shortcut_nav">层级导航</span></div>
+            <div class="feature-item"><code>Shift+→/←</code>: <span data-i18n="popup_shortcut_internal">进/出内部元素</span></div>
+            <div class="feature-item"><code>Shift+Click Hierarchy</code>: <span data-i18n="popup_shortcut_binding">层级绑定，将后续选择范围精确限定在该父层级下。</span></div>
         </div>
 
         <div class="feature-list" style="margin-top: 10px;">
-            <h3 style="font-size: 14px; color: #555; margin-bottom: 5px;">搜索语法提示</h3>
-            <div class="feature-item"><code>*</code> : 匹配任意多个字符 (如: `数据*分析`)</div>
-            <div class="feature-item"><code>?</code> : 匹配单个字符 (如: `第?章`)</div>
-            <div class="feature-item"><code>[a,b,c]</code> : 匹配括号内任一项 (如: `第[一,二]章`)</div>
-            <div class="feature-item"><code>"..."</code> : 按字面文本匹配 (如: `"*"`匹配星号)</div>
+            <h3 style="font-size: 14px; color: #555; margin-bottom: 5px;" data-i18n="popup_search_tips_title">搜索语法提示</h3>
+            <div class="feature-item"><code>*</code> : <span data-i18n="popup_search_any">匹配任意多个字符</span></div>
+            <div class="feature-item"><code>?</code> : <span data-i18n="popup_search_single">匹配单个字符</span></div>
+            <div class="feature-item"><code>[a,b,c]</code> : <span data-i18n="popup_search_list">匹配括号内任一项</span></div>
+            <div class="feature-item"><code>"..."</code> : <span data-i18n="popup_search_literal">按字面文本匹配</span></div>
         </div>
     </div>
+    <script src="popup.js"></script>
 </body>
 </html>

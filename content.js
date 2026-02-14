@@ -10,6 +10,21 @@
  */
 
 // =============================================
+// 辅助函数 - 国际化翻译
+// =============================================
+const t = (key, ...args) => {
+  // 如果第一个参数是数组，则直接使用它作为占位符替换数组
+  // 否则使用 args 数组本身
+  const substitutions = (args.length === 1 && Array.isArray(args[0])) ? args[0] : args;
+  // chrome.i18n.getMessage 的第二个参数要求是字符串或字符串数组
+  // 确保所有参数都转换为字符串
+  const stringSubstitutions = Array.isArray(substitutions) 
+    ? substitutions.map(String) 
+    : String(substitutions);
+  return chrome.i18n.getMessage(key, stringSubstitutions) || key;
+};
+
+// =============================================
 // 全局状态管理 - 追踪用户交互和选中元素的状态变量
 // =============================================
 // 存储已点击的元素
@@ -211,14 +226,14 @@ document.addEventListener('keydown', function(event) {
         navigator.clipboard.writeText(textToCopy)
             .then(() => {
                 // 显示复制成功提示
-                showTemporaryMessage('已复制选中内容到剪贴板');
+                showTemporaryMessage(t('msg_copied'));
             })
             .catch(() => {
-                 showTemporaryMessage('复制到剪贴板失败');
+                 showTemporaryMessage(t('msg_copy_failed'));
                 // console.error('复制组合键复制失败');
             });
     } else {
-        showTemporaryMessage('没有内容可复制');
+        showTemporaryMessage(t('msg_no_content'));
     }
   }
 
@@ -1096,14 +1111,14 @@ function showSelectAllOfTypePrompt(elementInfo) {
   // 显示提示内容 - 优化文本
   promptContainer.innerHTML = `
     <div style="margin-bottom: 8px;">
-      <strong>检测到相同元素</strong>
+      <strong>${t('prompt_batch_select')}</strong>
     </div>
     <div style="margin-bottom: 10px; font-size: 13px;">
-      是否批量选择所有 <code style="background: rgba(255,255,255,0.2); padding: 2px 4px; border-radius: 3px;">${elementDesc}</code> 元素？
+      ${t('prompt_batch_select_desc', elementDesc)}
     </div>
     <div style="display: flex; align-items: center; gap: 8px;">
-      <button id="select-all-of-type-confirm" class="batch-selector-ui" style="padding: 4px 10px; background-color: rgba(255,255,255,0.3); border: none; color: white; border-radius: 3px; cursor: pointer; flex: 1;">全选 (${typeSelectKeyText})</button>
-      <button id="select-all-of-type-cancel" class="batch-selector-ui" style="padding: 4px 10px; background-color: rgba(255,255,255,0.15); border: none; color: white; border-radius: 3px; cursor: pointer;">取消</button>
+      <button id="select-all-of-type-confirm" class="batch-selector-ui" style="padding: 4px 10px; background-color: rgba(255,255,255,0.3); border: none; color: white; border-radius: 3px; cursor: pointer; flex: 1;">${t('btn_select_all')} (${typeSelectKeyText})</button>
+      <button id="select-all-of-type-cancel" class="batch-selector-ui" style="padding: 4px 10px; background-color: rgba(255,255,255,0.15); border: none; color: white; border-radius: 3px; cursor: pointer;">${t('btn_cancel')}</button>
       <label style="
         display: flex;
         align-items: center;
@@ -1113,7 +1128,7 @@ function showSelectAllOfTypePrompt(elementInfo) {
         white-space: nowrap;
       ">
         <input type="checkbox" id="hide-type-prompt" class="batch-selector-ui" style="margin:0; transform: scale(0.85);">
-        <span>不再提示</span>
+        <span>${t('checkbox_dont_show')}</span>
       </label>
     </div>
   `;
@@ -1275,7 +1290,7 @@ function selectAllElements() {
 
   // 如果还没有选过任何元素，提示
   if (selectedElements.length === 0) {
-    showTemporaryGlobalMessage(`请先选择至少一个元素，${typeSelectKeyText}键将选择所有相同类型元素`, 3000);
+    showTemporaryGlobalMessage(t('msg_select_at_least_one', typeSelectKeyText), 3000);
     return;
   }
 
@@ -1315,7 +1330,7 @@ function showElementInfo(element, count) {
     updateNotification(selectedElements.length);
   } else {
     // 如果还没有主UI，使用临时信息
-    showTemporaryMessage(`已点击元素 ${count}: ${info}`);
+    showTemporaryMessage(`${t('ui_current_element')} ${count}: ${info}`);
   }
 }
 
@@ -1410,7 +1425,7 @@ function viewInside() {
 
   // 如果没有子元素，不进行操作
   if (childrenChain.length === 0) {
-    showTemporaryGlobalMessage('该元素没有可选择的子元素', 3000);
+    showTemporaryGlobalMessage(t('msg_no_internal_elements'), 3000);
     return;
   }
 
@@ -1751,7 +1766,10 @@ function showAutoDetectLink() {
   autoDetectElement.style.fontSize = '0.9em';
 
   autoDetectElement.innerHTML = `
-    <div style="margin-bottom: 5px;">🔍 检测到内部链接</div>
+    <div style="margin-bottom: 5px;">${t('tip_internal_links')}</div>
+    <div style="font-size: 0.85em; margin-bottom: 8px; color: #ccc;">
+      ${t('tip_internal_links_desc')}
+    </div>
     <button id="view-inner-links" style="
       padding: 3px 8px;
       background-color: rgba(33, 150, 243, 0.8);
@@ -1760,7 +1778,7 @@ function showAutoDetectLink() {
       border-radius: 3px;
       cursor: pointer;
       font-size: 0.9em;
-    ">查看内部链接</button>
+    ">${t('btn_view_internal_links')}</button>
   `;
 
   notification.appendChild(autoDetectElement);
@@ -1878,8 +1896,8 @@ function updateNotification(count) {
     notification.style.fontFamily = 'system-ui, -apple-system, sans-serif';
 
     notification.innerHTML = `
-      <div title="已选择 ${count} 个元素 (点击展开)" style="display: flex; align-items: center; gap: 8px;">
-        <div style="font-size: 12px;">已选择元素</div>
+      <div title="${t('ui_selected_count', count)} (${t('ui_click_to_expand')})" style="display: flex; align-items: center; gap: 8px;">
+        <div style="font-size: 12px;">${t('ui_selected_elements')}</div>
         <div style="font-weight: bold; font-size: 15px;">${count}</div>
         <div style="margin-left: 5px; opacity: 0.7; font-size: 12px;">▼</div>
       </div>
@@ -1927,9 +1945,9 @@ function updateNotification(count) {
       hierarchyHTML = '<div style="margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 6px;">';
       hierarchyHTML += `
         <div style="margin-bottom: 6px; font-size: 0.9em; display: flex; justify-content: space-between; align-items: center;">
-          <span>元素层级:</span>
+          <span>${t('ui_hierarchy')}:</span>
           <span id="hierarchy-toggle" class="batch-selector-ui" style="cursor: pointer; font-size: 0.8em; color: #aaa; user-select: none;">
-            ${isHierarchyExpanded ? '折叠' : '展开'}
+            ${isHierarchyExpanded ? t('ui_collapse') : t('ui_expand')}
           </span>
         </div>
       `; // 注意这里是反引号 `
@@ -1954,8 +1972,8 @@ function updateNotification(count) {
               <div style="position: absolute; height: 100%; left: 18px; top: 0; border-left: 1px dashed rgba(180, 180, 180, 0.4); z-index: 0;"></div>
               <div id="show-more-levels" class="batch-selector-ui" style="display: inline-flex; align-items: center; justify-content: center; padding: 4px 14px; background-color: rgba(255, 255, 255, 0.08); border-radius: 15px; font-size: 0.85em; cursor: pointer; color: #bbb; border: 1px dashed rgba(180, 180, 180, 0.4); gap: 8px; position: relative; margin-left: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); transition: all 0.2s ease; z-index: 1;">
                 <span style="font-size: 1.5em; line-height: 1em;">⋮</span>
-                <span>省略 ${collapsedCount} 层</span>
-                <span style="font-size: 0.9em; opacity: 0.7; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 8px;">点击展开</span>
+                <span>${t('ui_omit_levels', collapsedCount)}</span>
+                <span style="font-size: 0.9em; opacity: 0.7; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 8px;">${t('ui_click_to_expand')}</span>
           </div>
         </div>
           `; // 注意这里是反引号 `
@@ -1976,10 +1994,10 @@ function updateNotification(count) {
               ${level > 0 ? '<span style="margin-right: 5px; color: rgba(180, 180, 180, 0.6); font-size: 0.85em;">└─</span>' : ''}
               <span class="level-selector batch-selector-ui" data-level="${i}" data-current="${isCurrentLevel}" data-matched="${isMatchedLevel}" style="display: inline-flex; align-items: center; padding: 3px 8px; background-color: ${isCurrentLevel ? 'rgba(66, 133, 244, 0.8)' : isMatchedLevel ? 'rgba(247, 152, 29, 0.8)' : 'rgba(255, 255, 255, 0.08)'}; border-radius: 4px; font-size: 0.85em; cursor: pointer; ${isCurrentLevel || isMatchedLevel ? 'font-weight: bold;' : ''} transition: all 0.2s ease; box-shadow: ${isCurrentLevel || isMatchedLevel ? '0 1px 3px rgba(0,0,0,0.3)' : '0 1px 2px rgba(0,0,0,0.1)'}; color: ${isCurrentLevel || isMatchedLevel ? 'white' : '#ddd'}; border: 1px solid ${isCurrentLevel ? 'rgba(66, 133, 244, 0.6)' : isMatchedLevel ? 'rgba(247, 152, 29, 0.6)' : 'transparent'};">
                 <span style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${desc}</span>
-                ${isCurrentLevel ? ' <span style="margin-left: 5px; color: #8effb7; font-size: 0.9em; display: inline-flex; align-items: center;"><span style="margin-right: 2px;">✓</span>当前</span>' : ''}
-                ${isMatchedLevel ? ' <span style="margin-left: 5px; color: #ffcc80; font-size: 0.9em; display: inline-flex; align-items: center;"><span style="margin-right: 2px;">⊙</span>匹配</span>' : ''}
-                ${i === 0 ? ' <span style="margin-left: 5px; color: #ffcc80; font-size: 0.85em; background: rgba(255,150,30,0.15); padding: 1px 4px; border-radius: 3px;">底</span>' : ''}
-                ${i === parentChain.length - 1 ? ' <span style="margin-left: 5px; color: #ffcc80; font-size: 0.85em; background: rgba(255,150,30,0.15); padding: 1px 4px; border-radius: 3px;">顶</span>' : ''}
+                ${isCurrentLevel ? ` <span style="margin-left: 5px; color: #8effb7; font-size: 0.9em; display: inline-flex; align-items: center;"><span style="margin-right: 2px;">✓</span>${t('ui_current')}</span>` : ''}
+                ${isMatchedLevel ? ` <span style="margin-left: 5px; color: #ffcc80; font-size: 0.9em; display: inline-flex; align-items: center;"><span style="margin-right: 2px;">⊙</span>${t('ui_match')}</span>` : ''}
+                ${i === 0 ? ` <span style="margin-left: 5px; color: #ffcc80; font-size: 0.85em; background: rgba(255,150,30,0.15); padding: 1px 4px; border-radius: 3px;">${t('ui_bottom')}</span>` : ''}
+                ${i === parentChain.length - 1 ? ` <span style="margin-left: 5px; color: #ffcc80; font-size: 0.85em; background: rgba(255,150,30,0.15); padding: 1px 4px; border-radius: 3px;">${t('ui_top')}</span>` : ''}
               </span>
             </div>
           </div>
@@ -1999,7 +2017,7 @@ function updateNotification(count) {
       let childrenHTML = '';
       if (childrenChain.length > 0) {
         childrenHTML = '<div style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">';
-        childrenHTML += '<div style="margin-bottom: 8px;">内部元素 <small>(点击选择)</small>:</div>';
+        childrenHTML += `<div style="margin-bottom: 8px;">${t('ui_internal_elements')} <small>(${t('ui_click_to_select')})</small>:</div>`;
         childrenHTML += '<div style="display: flex; flex-direction: column;">';
         childrenChain.forEach((el, index) => {
           const tag = el.tagName.toLowerCase();
@@ -2020,17 +2038,17 @@ function updateNotification(count) {
       }
 
       contentHTML = `
-        <div>正在浏览元素内部内容</div>
-        <div style="font-size: 0.9em; margin: 5px 0; text-align: left; color: #aaa;">选择内部元素将仅更改当前元素组</div>
+        <div>${t('ui_viewing_internal')}</div>
+        <div style="font-size: 0.9em; margin: 5px 0; text-align: left; color: #aaa;">${t('ui_internal_desc')}</div>
         ${childrenHTML}
         ${hierarchyHTML}
-        <div style="font-size: 0.8em; margin-top: 8px; color: #aaa;">快捷键: Shift+← 返回父元素, ESC 取消</div>
+        <div style="font-size: 0.8em; margin-top: 8px; color: #aaa;">${t('ui_shortcut_nav_hint')}</div>
       `; // 注意这里是反引号 `
 
       buttonsHTML = `
         <div style="display: flex; gap: 10px; margin-top: 10px;">
-          <button id="batch-selector-back" class="batch-selector-ui" style="padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;">← 返回</button>
-          <button id="batch-selector-cancel" class="batch-selector-ui" style="padding: 4px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; margin-left: auto; font-size: 0.85em;">取消 ✕</button>
+          <button id="batch-selector-back" class="batch-selector-ui" style="padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;">← ${t('ui_btn_back')}</button>
+          <button id="batch-selector-cancel" class="batch-selector-ui" style="padding: 4px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; margin-left: auto; font-size: 0.85em;">${t('ui_btn_cancel')} ✕</button>
         </div>
       `; // 注意这里是反引号 `
 
@@ -2040,7 +2058,7 @@ function updateNotification(count) {
       // =============================
       let selectorInfo = '';
       if (currentSelector) {
-        selectorInfo = `<div style="font-size: 0.85em; margin: 4px 0; text-align: left;">当前选择器: <code>${currentSelector}</code></div>`;
+        selectorInfo = `<div style="font-size: 0.85em; margin: 4px 0; text-align: left;">${t('ui_current_selector')}: <code>${currentSelector}</code></div>`;
       }
 
       let selectedTypesHTML = '';
@@ -2054,11 +2072,11 @@ function updateNotification(count) {
       if (Object.keys(elementTypes).length > 0) {
           selectedTypesHTML = '<div style="margin-top: 6px;">';
           if (window.clickedElementInfo) {
-            selectedTypesHTML += `<div style="font-size: 0.9em; margin-bottom: 8px;">当前元素: <code style="background: rgba(255,255,255,0.1); padding: 2px 4px; border-radius: 3px; font-size: 0.9em;">${window.clickedElementInfo.info}</code></div>`;
+            selectedTypesHTML += `<div style="font-size: 0.9em; margin-bottom: 8px;">${t('ui_current_element')}: <code style="background: rgba(255,255,255,0.1); padding: 2px 4px; border-radius: 3px; font-size: 0.9em;">${window.clickedElementInfo.info}</code></div>`;
           }
           selectedTypesHTML += `<div style="margin-bottom: 6px; font-size: 0.9em; display: flex; align-items: center; justify-content: space-between;">
-                                  <span>已选元素: <span style="font-weight: bold;">${count}</span></span>
-                                  <button id="batch-selector-copy-btn" class="batch-selector-ui" title="复制选中内容 (Ctrl+C)" style="padding: 2px 8px; background-color: rgba(66, 133, 244, 0.7); border: 1px solid rgba(66, 133, 244, 1); color: white; border-radius: 4px; cursor: pointer; font-size: 0.8em; margin-left: 10px;">复制</button>
+                                  <span>${t('ui_selected')}: <span style="font-weight: bold;">${count}</span></span>
+                                  <button id="batch-selector-copy-btn" class="batch-selector-ui" title="${t('ui_copy_title')}" style="padding: 2px 8px; background-color: rgba(66, 133, 244, 0.7); border: 1px solid rgba(66, 133, 244, 1); color: white; border-radius: 4px; cursor: pointer; font-size: 0.8em; margin-left: 10px;">${t('ui_btn_copy')}</button>
                                </div>`;
           for (const key in elementTypes) {
             const typeInfo = elementTypes[key]; let typeName = typeInfo.tagName;
@@ -2078,38 +2096,38 @@ function updateNotification(count) {
     const outputFormatHTML = `
       <div style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 10px;">
         <div id="output-format-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; margin-bottom: ${isOutputFormatExpanded ? '6px' : '0'};">
-          <span style="font-size: 0.9em;">输出设置</span>
+          <span style="font-size: 0.9em;">${t('ui_output_settings')}</span>
           <span class="toggle-arrow" style="font-size: 0.8em;">${isOutputFormatExpanded ? '▼' : '▶'}</span>
             </div>
         <div id="output-format-content" style="display: ${isOutputFormatExpanded ? 'block' : 'none'};">
           <!-- 修改剪贴板格式布局为单行 -->
           <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 6px;">
-            <div style="font-size: 0.9em; flex-shrink: 0;">剪贴板分隔方式:</div>
+            <div style="font-size: 0.9em; flex-shrink: 0;">${t('ui_clipboard_sep')}:</div>
         <div style="display: flex; gap: 6px;">
-                <label style="display: inline-block; padding: 3px 8px; background-color: ${clipboardFormat === 'newline' ? 'rgba(66, 133, 244, 0.8)' : 'rgba(255, 255, 255, 0.1)'}; border-radius: 10px; font-size: 0.8em; cursor: pointer;"><input type="radio" name="clipboardFormat" value="newline" style="display:none;" ${clipboardFormat === 'newline' ? 'checked' : ''}>换行</label>
-                <label style="display: inline-block; padding: 3px 8px; background-color: ${clipboardFormat === 'space' ? 'rgba(66, 133, 244, 0.8)' : 'rgba(255, 255, 255, 0.1)'}; border-radius: 10px; font-size: 0.8em; cursor: pointer;"><input type="radio" name="clipboardFormat" value="space" style="display:none;" ${clipboardFormat === 'space' ? 'checked' : ''}>空格</label>
-                <label style="display: inline-block; padding: 3px 8px; background-color: ${clipboardFormat === 'comma' ? 'rgba(66, 133, 244, 0.8)' : 'rgba(255, 255, 255, 0.1)'}; border-radius: 10px; font-size: 0.8em; cursor: pointer;"><input type="radio" name="clipboardFormat" value="comma" style="display:none;" ${clipboardFormat === 'comma' ? 'checked' : ''}>逗号</label>
+                <label style="display: inline-block; padding: 3px 8px; background-color: ${clipboardFormat === 'newline' ? 'rgba(66, 133, 244, 0.8)' : 'rgba(255, 255, 255, 0.1)'}; border-radius: 10px; font-size: 0.8em; cursor: pointer;"><input type="radio" name="clipboardFormat" value="newline" style="display:none;" ${clipboardFormat === 'newline' ? 'checked' : ''}>${t('ui_sep_newline')}</label>
+                <label style="display: inline-block; padding: 3px 8px; background-color: ${clipboardFormat === 'space' ? 'rgba(66, 133, 244, 0.8)' : 'rgba(255, 255, 255, 0.1)'}; border-radius: 10px; font-size: 0.8em; cursor: pointer;"><input type="radio" name="clipboardFormat" value="space" style="display:none;" ${clipboardFormat === 'space' ? 'checked' : ''}>${t('ui_sep_space')}</label>
+                <label style="display: inline-block; padding: 3px 8px; background-color: ${clipboardFormat === 'comma' ? 'rgba(66, 133, 244, 0.8)' : 'rgba(255, 255, 255, 0.1)'}; border-radius: 10px; font-size: 0.8em; cursor: pointer;"><input type="radio" name="clipboardFormat" value="comma" style="display:none;" ${clipboardFormat === 'comma' ? 'checked' : ''}>${t('ui_sep_comma')}</label>
         </div>
       </div>
-          <div style="margin-top: 8px; font-size: 0.9em; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">文本清理选项:</div>
+          <div style="margin-top: 8px; font-size: 0.9em; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">${t('ui_clean_options')}:</div>
           <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 8px; margin-top: 6px;">
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeInternalSpaces" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeInternalSpaces ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>文本空格</span></label>
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeCodePatterns" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeCodePatterns ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>代码</span></label>
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeSymbols" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeSymbols ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>符号</span></label>
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeEnglish" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeEnglish ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>英文</span></label>
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeChinese" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeChinese ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>中文</span></label>
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeNumbers" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeNumbers ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>数字</span></label>
+            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeInternalSpaces" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeInternalSpaces ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_spaces')}</span></label>
+            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeCodePatterns" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeCodePatterns ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_code')}</span></label>
+            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeSymbols" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeSymbols ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_symbols')}</span></label>
+            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeEnglish" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeEnglish ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_english')}</span></label>
+            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeChinese" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeChinese ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_chinese')}</span></label>
+            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeNumbers" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeNumbers ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_numbers')}</span></label>
           </div>
           <div style="margin-top: 8px; display: flex; align-items: center; gap: 8px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">
-             <div style="font-size: 0.9em; flex-shrink: 0;">去重选项:</div>
-             <label style="display: flex; align-items: center; gap: 4px; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeDuplicates" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeDuplicates ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>去除重复项</span></label>
+             <div style="font-size: 0.9em; flex-shrink: 0;">${t('ui_clean_duplicates')}:</div>
+             <label style="display: flex; align-items: center; gap: 4px; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeDuplicates" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeDuplicates ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_duplicates')}</span></label>
           </div>
           <!-- 新增：实时复制选项 -->
           <div style="margin-top: 8px; display: flex; align-items: center; gap: 8px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">
-             <div style="font-size: 0.9em; flex-shrink: 0;">实时复制:</div>
-             <label style="display: flex; align-items: center; gap: 4px; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="realtimeCopyEnabled" class="batch-selector-ui" ${isRealtimeCopyEnabled ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>实时复制到剪贴板</span></label>
+             <div style="font-size: 0.9em; flex-shrink: 0;">${t('ui_realtime_copy')}:</div>
+             <label style="display: flex; align-items: center; gap: 4px; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="realtimeCopyEnabled" class="batch-selector-ui" ${isRealtimeCopyEnabled ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_realtime_copy_desc')}</span></label>
           </div>
-      </div>
+        </div>
       </div>
     `;
 
@@ -2118,12 +2136,8 @@ function updateNotification(count) {
       <div style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 10px;">
         <div id="search-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; margin-bottom: ${isSearchExpanded ? '6px' : '0'};">
           <div style="display: flex; align-items: center;">
-            <span style="font-size: 0.9em;">文本/模式搜索</span>
-            <span id="search-help-icon" class="batch-selector-ui" title="模式搜索语法:
-* - 匹配任意数量的字符 (例如: 数据*分析)
-? - 匹配单个字符 (例如: 第?章)
-[a,b,c] - 匹配括号内任一项 (例如: [1,2,3,10])
-&quot;...&quot; - 引号内的语法字符按实际匹配 (例如: &quot;[1,2]&quot;匹配[1,2])" style="
+            <span style="font-size: 0.9em;">${t('ui_search_title')}</span>
+            <span id="search-help-icon" class="batch-selector-ui" title="${t('ui_search_help')}" style="
               margin-left: 5px;
               display: inline-flex;
               justify-content: center;
@@ -2145,18 +2159,18 @@ function updateNotification(count) {
              <span id="batch-selector-search-count" style="font-size: 0.9em; color: #ccc;"></span>
           </div>
           <div style="display: flex; gap: 5px; align-items: center;">
-            <input type="text" id="batch-selector-search-input" placeholder="输入文本或模式 (* = 多个, ? = 单个)" value="${searchTerm}" style="flex-grow: 1; padding: 4px 6px; border-radius: 3px; border: 1px solid #555; background-color: #333; color: white; font-size: 0.9em;" class="batch-selector-ui">
-            <button id="batch-selector-search-btn" style="padding: 4px 8px; background-color: #4CAF50; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;" class="batch-selector-ui">搜索</button>
+            <input type="text" id="batch-selector-search-input" placeholder="${t('ui_search_input_placeholder')}" value="${searchTerm}" style="flex-grow: 1; padding: 4px 6px; border-radius: 3px; border: 1px solid #555; background-color: #333; color: white; font-size: 0.9em;" class="batch-selector-ui">
+            <button id="batch-selector-search-btn" style="padding: 4px 8px; background-color: #4CAF50; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;" class="batch-selector-ui">${t('ui_search_btn')}</button>
           </div>
           <div id="batch-selector-search-results-nav" style="margin-top: 5px; display: flex; justify-content: space-between; align-items: center; font-size: 0.85em; color: #ccc; min-height: 20px;">
             <div>
-              <button id="batch-selector-search-prev" style="padding: 2px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; margin-right: 4px;" class="batch-selector-ui" disabled>前一项</button>
-              <button id="batch-selector-search-next" style="padding: 2px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer;" class="batch-selector-ui" disabled>后一项</button>
+              <button id="batch-selector-search-prev" style="padding: 2px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; margin-right: 4px;" class="batch-selector-ui" disabled>${t('ui_search_prev')}</button>
+              <button id="batch-selector-search-next" style="padding: 2px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer;" class="batch-selector-ui" disabled>${t('ui_search_next')}</button>
             </div>
-            <button id="batch-selector-search-add-all" style="padding: 2px 6px; background-color: #2196F3; border: none; color: white; border-radius: 3px; cursor: pointer;" class="batch-selector-ui" disabled>添加到选择</button>
+            <button id="batch-selector-search-add-all" style="padding: 2px 6px; background-color: #2196F3; border: none; color: white; border-radius: 3px; cursor: pointer;" class="batch-selector-ui" disabled>${t('ui_search_add_all')}</button>
           </div>
           <div style="margin-top: 5px; display: none;">
-            <button id="batch-selector-search-add-all-original" style="width: 100%; padding: 4px 8px; background-color: #2196F3; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;" class="batch-selector-ui" disabled>将所有结果添加到选择</button>
+            <button id="batch-selector-search-add-all-original" style="width: 100%; padding: 4px 8px; background-color: #2196F3; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;" class="batch-selector-ui" disabled>${t('ui_search_add_all')}</button>
           </div>
         </div>
       </div>
@@ -2181,10 +2195,10 @@ function updateNotification(count) {
           : 'padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;';
       buttonsHTML = `
       <div style="display: flex; gap: 8px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 10px;">
-        <button id="batch-selector-inside" class="batch-selector-ui" style="${insideButtonStyle}">内部元素</button>
-        <button id="batch-selector-guide" class="batch-selector-ui" style="padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;">操作指南</button>
-        <button id="batch-selector-key-config-btn" class="batch-selector-ui" style="padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;">快捷键</button>
-        <button id="batch-selector-cancel" class="batch-selector-ui" style="padding: 4px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; margin-left: auto; font-size: 0.85em;">取消 ✕</button>
+        <button id="batch-selector-inside" class="batch-selector-ui" style="${insideButtonStyle}">${t('ui_btn_internal')}</button>
+        <button id="batch-selector-guide" class="batch-selector-ui" style="padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;">${t('ui_btn_guide')}</button>
+        <button id="batch-selector-key-config-btn" class="batch-selector-ui" style="padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;">${t('ui_btn_shortcuts')}</button>
+        <button id="batch-selector-cancel" class="batch-selector-ui" style="padding: 4px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; margin-left: auto; font-size: 0.85em;">${t('ui_btn_cancel')} ✕</button>
       </div>
       `;
     }
@@ -2192,7 +2206,7 @@ function updateNotification(count) {
     // --- 组装完整UI ---
     notification.innerHTML = `
       <div style="position: relative;">
-        <button id="batch-selector-minimize" class="batch-selector-ui" style="position: absolute; top: 0; right: 0; padding: 2px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.8em;">收起 ◢</button>
+        <button id="batch-selector-minimize" class="batch-selector-ui" style="position: absolute; top: 0; right: 0; padding: 2px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.8em;">${t('ui_btn_minimize')} ◢</button>
         ${contentHTML}
       ${buttonsHTML}
       </div>
@@ -3881,42 +3895,42 @@ function showKeyConfigPanel() {
   // 配置面板内容
   configPanel.innerHTML = `
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-      <h3 style="margin: 0; font-size: 15px;">快捷键配置</h3>
+      <h3 style="margin: 0; font-size: 15px;">${t('ui_shortcuts_config')}</h3>
       <button id="batch-selector-key-config-close" class="batch-selector-ui" style="background: none; border: none; color: white; cursor: pointer; font-size: 18px; padding: 0 5px;">×</button>
     </div>
 
     <div style="margin-bottom: 10px;">
-      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">选择键</div>
+      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">${t('ui_select_key')}</div>
       <div id="select-key-container" style="background: rgba(255,255,255,0.1); padding: 6px; border-radius: 4px; margin-bottom: 3px;">
         <div id="select-key-display" style="height: 22px; line-height: 22px; padding: 0 6px; background: rgba(255,255,255,0.2); border-radius: 3px; cursor: pointer; text-align: center;">${selectKeyConfig.keys.map(formatKeyForDisplay).join(' + ')}</div>
-        <div id="select-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">⚠️ 与其他快捷键冲突</div>
+        <div id="select-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">${t('ui_conflict_warning')}</div>
       </div>
-      <div style="font-size: 11px; opacity: 0.7;">用于"选择键+点击/框选"等操作；<br>层级绑定/层级元素切换仍与Shift配合</div>
+      <div style="font-size: 11px; opacity: 0.7;">${t('ui_select_key_desc')}</div>
     </div>
 
     <div style="margin-bottom: 10px;">
-      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">选择相同类型键</div>
+      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">${t('ui_type_select_key')}</div>
       <div id="type-select-key-container" style="background: rgba(255,255,255,0.1); padding: 6px; border-radius: 4px; margin-bottom: 3px;">
         <div id="type-select-key-display" style="height: 22px; line-height: 22px; padding: 0 6px; background: rgba(255,255,255,0.2); border-radius: 3px; cursor: pointer; text-align: center;">${typeSelectKeyConfig.keys.map(formatKeyForDisplay).join(' + ')}</div>
-        <div id="type-select-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">⚠️ 与其他快捷键冲突</div>
+        <div id="type-select-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">${t('ui_conflict_warning')}</div>
       </div>
-      <div style="font-size: 11px; opacity: 0.7;">用于选择所有相同类型元素</div>
+      <div style="font-size: 11px; opacity: 0.7;">${t('ui_type_select_key_desc')}</div>
     </div>
 
     <div style="margin-bottom: 10px;">
-      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">复制组合键</div>
+      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">${t('ui_copy_key')}</div>
       <div id="copy-key-container" style="background: rgba(255,255,255,0.1); padding: 6px; border-radius: 4px; margin-bottom: 3px;">
         <div id="copy-key-display" style="height: 22px; line-height: 22px; padding: 0 6px; background: rgba(255,255,255,0.2); border-radius: 3px; cursor: pointer; text-align: center;">${copyKeyConfig.keys.map(formatKeyForDisplay).join(' + ')}</div>
-        <div id="copy-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">⚠️ 与其他快捷键冲突</div>
+        <div id="copy-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">${t('ui_conflict_warning')}</div>
       </div>
-      <div style="font-size: 11px; opacity: 0.7;">用于复制所有选中内容</div>
+      <div style="font-size: 11px; opacity: 0.7;">${t('ui_copy_key_desc')}</div>
     </div>
 
     <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
       <span id="save-status-message" style="font-size: 11px; color: #8bc34a; opacity: 0; transition: opacity 0.3s ease-in-out;"></span>
       <div style="display: flex; gap: 8px;">
-        <button id="reset-key-defaults" class="batch-selector-ui" style="padding: 4px 8px; background: #555; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">恢复默认</button>
-        <button id="batch-selector-key-config-save" class="batch-selector-ui" style="padding: 4px 8px; background: #4285f4; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">保存</button>
+        <button id="reset-key-defaults" class="batch-selector-ui" style="padding: 4px 8px; background: #555; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">${t('ui_reset_defaults')}</button>
+        <button id="batch-selector-key-config-save" class="batch-selector-ui" style="padding: 4px 8px; background: #4285f4; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">${t('ui_save')}</button>
       </div>
     </div>
   `;
@@ -4169,7 +4183,7 @@ function setupKeyConfigEvents() {
           showSaveSuccessEffect();
           // 显示保存成功提示
           if (statusMessage) {
-            statusMessage.textContent = '已保存成功';
+            statusMessage.textContent = t('ui_saved_success');
             statusMessage.style.opacity = '1';
             // 3秒后隐藏提示
             setTimeout(() => {
@@ -4181,7 +4195,7 @@ function setupKeyConfigEvents() {
         } else {
           // 显示无更改提示
           if (statusMessage) {
-            statusMessage.textContent = '无更改';
+            statusMessage.textContent = t('ui_no_changes');
             statusMessage.style.opacity = '1';
             // 3秒后隐藏提示
             setTimeout(() => {
@@ -4213,7 +4227,7 @@ function startKeyCapture(targetType) {
   // 更新显示为等待状态
   const displayElement = document.getElementById(`${targetType}-display`);
   if (displayElement) {
-    displayElement.textContent = '同时按下组合键...(按Enter结束)';
+    displayElement.textContent = t('ui_press_keys_to_capture');
     displayElement.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
   }
 
@@ -5136,12 +5150,12 @@ function updateSearchResultUI() {
   if (!countElement || !prevButton || !nextButton || !addAllButton) return;
 
   if (searchResults.length === 0) {
-    countElement.textContent = '无结果';
+    countElement.textContent = t('ui_no_results');
     prevButton.disabled = true;
     nextButton.disabled = true;
     addAllButton.disabled = true;
   } else {
-    countElement.textContent = `结果 ${currentSearchResultIndex + 1} / ${searchResults.length}`;
+    countElement.textContent = t('ui_search_result_count', [currentSearchResultIndex + 1, searchResults.length]);
     prevButton.disabled = currentSearchResultIndex <= 0;
     nextButton.disabled = currentSearchResultIndex >= searchResults.length - 1;
     addAllButton.disabled = false;
