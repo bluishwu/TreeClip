@@ -3,25 +3,25 @@
     "message": "TreeClip 文本批量选择器"
   },
   "extensionDescription": {
-    "message": "强大的文本批量选择工具，用Shift+点击/框选/F键/搜索轻松选择多个元素，提取文本内容。结合层级导航、内部元素选择、层级绑定、自定义输出格式等功能，提升文本复制效率。"
+    "message": "TreeClip 是一款网页文本批量选择工具。提供多种灵活的文本选择方式（同类选择、点选、框选），并结合层级切换、层级绑定、块内字段、自定义输出格式等功能，大幅提升您从网页复制信息的效率。"
   },
   "actionTitle": {
     "message": "TreeClip 文本批量选择器"
   },
   "msg_copied": {
-    "message": "已复制选中内容到剪贴板"
+    "message": "已将所选文本复制到剪贴板"
   },
   "msg_copy_failed": {
     "message": "复制到剪贴板失败"
   },
   "msg_no_content": {
-    "message": "没有内容可复制"
+    "message": "所选文本块中没有可复制的文本"
   },
   "prompt_batch_select": {
-    "message": "检测到相同元素"
+    "message": "检测到结构相同的文本块"
   },
   "prompt_batch_select_desc": {
-    "message": "是否批量选择所有 $DESC$ 元素？",
+    "message": "是否选取页面中所有与 $DESC$ 结构相同的文本块？",
     "placeholders": {
       "desc": {
         "content": "$1"
@@ -29,7 +29,7 @@
     }
   },
   "btn_select_all": {
-    "message": "全选"
+    "message": "选择同类文本"
   },
   "btn_cancel": {
     "message": "取消"
@@ -38,7 +38,7 @@
     "message": "不再提示"
   },
   "msg_select_at_least_one": {
-    "message": "请先选择至少一个元素，$KEY$键将选择所有相同类型元素",
+    "message": "请先选取一个文本块；按 $KEY$ 可扩展选择结构相同的文本",
     "placeholders": {
       "key": {
         "content": "$1"
@@ -46,99 +46,170 @@
     }
   },
   "msg_no_internal_elements": {
-    "message": "该元素没有可选择的子元素"
+    "message": "这个文本块没有可单独提取的块内字段"
   },
   "tip_internal_links": {
-    "message": "🔍 检测到内部链接"
+    "message": "🔍 检测到文本块内的链接"
   },
   "tip_internal_links_desc": {
-    "message": "该选择器在当前元素中找到了唯一的链接子元素"
+    "message": "当前文本块中包含一个可单独选取的链接文本"
   },
   "btn_view_internal_links": {
-    "message": "查看内部链接"
+    "message": "选取链接文本"
   },
   "popup_instruction_desc": {
-    "message": "网页元素启用选择器"
+    "message": "按住 Shift 开始选择网页文本"
   },
   "popup_feature_click": {
-    "message": "点选：按住Shift点击选择单个元素"
+    "message": "多点选择"
+  },
+  "popup_feature_click_desc": {
+    "message": "连续点击多个分散的文本块"
   },
   "popup_feature_batch": {
-    "message": "批量：选中后按F键批量选择同类元素"
+    "message": "同类文本"
+  },
+  "popup_feature_batch_desc": {
+    "message": "先选一个样本，再按 F 扩展同类"
   },
   "popup_feature_rect": {
-    "message": "框选：按住Shift拖动鼠标选择区域"
+    "message": "区域框选"
   },
-  "popup_feature_search": {
-    "message": "文本搜索：支持通配符模式搜索"
+  "popup_feature_rect_desc": {
+    "message": "拖动矩形，一次选择区域内文本"
   },
-  "popup_feature_clean": {
-    "message": "文本清理：自定义输出格式与清理选项"
+  "popup_subtitle": {
+    "message": "更轻巧地选择、整理并复制网页文本"
   },
-  "popup_shortcuts_title": {
-    "message": "常用快捷键"
+  "popup_quick_start": {
+    "message": "快速开始"
   },
-  "popup_search_tips_title": {
-    "message": "搜索语法提示"
+  "popup_advanced_title": {
+    "message": "进阶选项"
   },
-  "popup_shortcut_click": {
-    "message": "选择或取消选择单个元素。"
+  "popup_advanced_hierarchy_title": {
+    "message": "层级切换"
   },
-  "popup_shortcut_drag": {
-    "message": "绘制矩形框进行框选。"
+  "popup_advanced_hierarchy_desc": {
+    "message": "扩大或缩小文本范围，精确控制最终复制内容。"
   },
-  "popup_shortcut_type": {
-    "message": "取消选择整个类型的元素。"
+  "popup_advanced_binding_title": {
+    "message": "层级绑定"
   },
-  "popup_shortcut_esc": {
-    "message": "清除所有选择，退出选择模式。"
+  "popup_advanced_binding_desc": {
+    "message": "将同类选择限定在指定父层级下，排除其他区域。"
   },
-  "popup_shortcut_f": {
-    "message": "选择所有类型相同的元素。"
+  "popup_advanced_internal_title": {
+    "message": "块内字段"
   },
-  "popup_shortcut_nav": {
-    "message": "层级导航"
+  "popup_advanced_internal_desc": {
+    "message": "从复合文本块中提取子字段。"
   },
-  "popup_shortcut_internal": {
-    "message": "进/出内部元素"
+  "popup_more_title": {
+    "message": "更多功能"
   },
-  "popup_shortcut_binding": {
-    "message": "层级绑定，将后续选择范围精确限定在该父层级下。"
+  "popup_more_output_title": {
+    "message": "输出设置"
   },
-  "popup_search_any": {
-    "message": "匹配任意多个字符"
+  "popup_more_output_desc": {
+    "message": "设置分隔与清理规则，并支持去重和实时复制。"
   },
-  "popup_search_single": {
-    "message": "匹配单个字符"
+  "popup_more_shortcuts_title": {
+    "message": "快捷键配置"
   },
-  "popup_search_list": {
-    "message": "匹配括号内任一项"
+  "popup_more_shortcuts_desc": {
+    "message": "自定义选择、同类扩展和复制快捷键。"
   },
-  "popup_search_literal": {
-    "message": "按字面文本匹配"
+  "popup_more_panel_title": {
+    "message": "多形态面板"
   },
-  "ui_selected_count": {
-    "message": "已选择 $COUNT$ 个元素",
+  "popup_more_panel_desc": {
+    "message": "切换详情、标准或极简模式，并可移动和吸附面板。"
+  },
+  "popup_guide_button": {
+    "message": "操作指南"
+  },
+  "popup_shortcuts_button": {
+    "message": "快捷键"
+  },
+  "popup_website_link": {
+    "message": "官网"
+  },
+  "popup_github_link": {
+    "message": "GitHub"
+  },
+  "popup_email_link": {
+    "message": "邮件"
+  },
+  "popup_panel_unavailable": {
+    "message": "当前页面无法打开 TreeClip 浮层"
+  },
+  "ui_selected_elements": {
+    "message": "已选文本块"
+  },
+  "ui_selected_short": {
+    "message": "已选"
+  },
+  "ui_action_bar_label": {
+    "message": "文本选择操作"
+  },
+  "ui_btn_select_similar": {
+    "message": "选择同类"
+  },
+  "ui_select_similar_hint": {
+    "message": "按网页结构扩展同类文本（$KEY$）",
     "placeholders": {
-      "count": {
+      "key": {
         "content": "$1"
       }
     }
   },
-  "ui_selected_elements": {
-    "message": "已选择元素"
+  "ui_copy_hint": {
+    "message": "复制所选文本到剪贴板（$KEY$）",
+    "placeholders": {
+      "key": {
+        "content": "$1"
+      }
+    }
+  },
+  "ui_btn_more": {
+    "message": "更多"
+  },
+  "ui_btn_toggle_compact": {
+    "message": "切换缩小或极简模式"
+  },
+  "ui_btn_hide_details": {
+    "message": "收起"
+  },
+  "ui_btn_clear": {
+    "message": "清除全部选择"
+  },
+  "ui_details_title": {
+    "message": "选择详情"
+  },
+  "ui_drag_to_close": {
+    "message": "拉动调整展开程度；点击切换状态"
+  },
+  "ui_move_box": {
+    "message": "拖动空白区域移动选择面板"
+  },
+  "ui_groups_title": {
+    "message": "已选文本分组"
+  },
+  "ui_group_hint": {
+    "message": "点击切换当前分组；Shift + 点击可移除整组"
+  },
+  "ui_no_text_preview": {
+    "message": "无文本预览"
   },
   "ui_click_to_expand": {
     "message": "点击展开"
   },
+  "ui_collapse_middle_levels": {
+    "message": "收起中间层"
+  },
   "ui_hierarchy": {
-    "message": "元素层级"
-  },
-  "ui_collapse": {
-    "message": "折叠"
-  },
-  "ui_expand": {
-    "message": "展开"
+    "message": "文本所在层级"
   },
   "ui_omit_levels": {
     "message": "省略 $COUNT$ 层",
@@ -161,34 +232,28 @@
     "message": "顶"
   },
   "ui_viewing_internal": {
-    "message": "正在浏览元素内部内容"
+    "message": "选择块内字段"
   },
   "ui_internal_elements": {
-    "message": "内部元素"
-  },
-  "ui_click_to_select": {
-    "message": "点击选择"
+    "message": "可提取字段"
   },
   "ui_internal_desc": {
-    "message": "选择内部元素将仅更改当前元素组"
+    "message": "从当前文本块中选择标题、价格或链接等独立内容"
   },
   "ui_shortcut_nav_hint": {
-    "message": "快捷键: Shift+← 返回父元素, ESC 取消"
+    "message": "快捷键: Shift+← 返回外层文本, ESC 清除选择"
   },
   "ui_btn_back": {
     "message": "返回"
-  },
-  "ui_btn_cancel": {
-    "message": "取消"
   },
   "ui_btn_copy": {
     "message": "复制"
   },
   "ui_current_selector": {
-    "message": "当前选择器"
+    "message": "当前结构选择器"
   },
   "ui_output_settings": {
-    "message": "输出设置"
+    "message": "文本输出设置"
   },
   "ui_clipboard_sep": {
     "message": "剪贴板分隔方式"
@@ -204,6 +269,9 @@
   },
   "ui_clean_options": {
     "message": "文本清理选项"
+  },
+  "ui_copy_behavior": {
+    "message": "复制行为"
   },
   "ui_clean_spaces": {
     "message": "文本空格"
@@ -232,71 +300,74 @@
   "ui_realtime_copy_desc": {
     "message": "实时复制到剪贴板"
   },
-  "ui_search_title": {
-    "message": "文本/模式搜索"
-  },
-  "ui_search_help": {
-    "message": "模式搜索语法:\n* - 匹配任意数量的字符 (例如: 数据*分析)\n? - 匹配单个字符 (例如: 第?章)\n[a,b,c] - 匹配括号内任一项 (例如: [1,2,3,10])\n\"...\" - 引号内的语法字符按实际匹配 (例如: \"[1,2]\"匹配[1,2])"
-  },
-  "ui_search_input_placeholder": {
-    "message": "输入文本或模式 (* = 多个, ? = 单个)"
-  },
-  "ui_search_btn": {
-    "message": "搜索"
-  },
-  "ui_search_prev": {
-    "message": "前一项"
-  },
-  "ui_search_next": {
-    "message": "后一项"
-  },
-  "ui_search_add_all": {
-    "message": "添加到选择"
-  },
   "ui_btn_internal": {
-    "message": "内部元素"
+    "message": "块内字段"
   },
-  "ui_btn_guide": {
-    "message": "操作指南"
+  "guide_bind_level": {
+    "message": "将后续同类选择限制在该父层级下"
   },
   "ui_btn_shortcuts": {
     "message": "快捷键"
   },
-  "ui_btn_minimize": {
-    "message": "收起"
-  },
-  "ui_selected": {
-    "message": "已选元素"
-  },
   "ui_current_element": {
-    "message": "当前元素"
-  },
-  "ui_copy_title": {
-    "message": "复制选中内容 (Ctrl+C)"
+    "message": "当前文本来源"
   },
   "ui_shortcuts_config": {
     "message": "快捷键配置"
   },
+  "shortcut_reference_title": {
+    "message": "固定快捷键指南"
+  },
+  "shortcut_hierarchy_desc": {
+    "message": "向上或向下切换文本层级"
+  },
+  "shortcut_fields_desc": {
+    "message": "进入或退出块内字段选择"
+  },
+  "shortcut_bind_label": {
+    "message": "Shift + 点击层级"
+  },
+  "shortcut_switch_group_label": {
+    "message": "点击分组"
+  },
+  "shortcut_switch_group_desc": {
+    "message": "切换当前操作的文本分组"
+  },
+  "shortcut_remove_group_label": {
+    "message": "Shift + 点击分组"
+  },
+  "shortcut_remove_group_desc": {
+    "message": "移除该文本分组"
+  },
+  "shortcut_clear_desc": {
+    "message": "清除全部文本选择"
+  },
+  "shortcut_edit_help": {
+    "message": "点击上方按键框可重新录入自定义快捷键；按 Enter 完成，然后保存。"
+  },
+  "ui_close": {
+    "message": "关闭"
+  },
   "ui_select_key": {
-    "message": "选择键"
+    "message": "文本选择键"
   },
   "ui_conflict_warning": {
     "message": "⚠️ 与其他快捷键冲突"
   },
   "ui_select_key_desc": {
-    "message": "用于\"选择键+点击/框选\"等操作；<br>层级绑定/层级元素切换仍与Shift配合"
+    "message": "用于点选或框选文本块；<br>层级操作仍与 Shift 配合"
   },
   "ui_type_select_key": {
-    "message": "选择相同类型键"
+    "message": "同类文本快捷键"
   },
   "ui_type_select_key_desc": {
-    "message": "用于选择所有相同类型元素"
+    "message": "按网页结构扩展选择同类文本块"
   },
   "ui_copy_key": {
     "message": "复制组合键"
   },
   "ui_copy_key_desc": {
-    "message": "用于复制所有选中内容"
+    "message": "复制所有已选文本"
   },
   "ui_reset_defaults": {
     "message": "恢复默认"
@@ -307,27 +378,13 @@
   "ui_press_keys_to_capture": {
     "message": "同时按下组合键...(按Enter结束)"
   },
-  "ui_saved": {
-    "message": "已保存"
-  },
   "ui_saved_success": {
     "message": "已保存成功"
   },
   "ui_no_changes": {
     "message": "无更改"
   },
-  "ui_no_results": {
-    "message": "无结果"
-  },
-  "ui_search_result_count": {
-    "message": "结果 $CURRENT$ / $TOTAL$",
-    "placeholders": {
-      "current": {
-        "content": "$1"
-      },
-      "total": {
-        "content": "$2"
-      }
-    }
+  "msg_invalid_hierarchy_binding": {
+    "message": "无法把外层文本边界绑定到更内层的结构"
   }
 }

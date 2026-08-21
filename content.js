@@ -1,5 +1,6 @@
 /**
- * 批量元素选择器(Batch Selector) - 网页元素快速选择与内容提取工具
+ * TreeClip 网页文本选择器 - 选取文本块并批量复制文本
+ * 说明：实现层仍以 DOM 元素作为文本边界和结构匹配依据；用户选择与输出的目标是文本。
  * 整体架构:
  * 1. 全局变量定义 - 存储工具运行状态、用户偏好和选中元素
  * 2. 事件监听器 - 处理键盘与鼠标交互，检测Shift+点击等组合操作
@@ -12,33 +13,90 @@
 // =============================================
 // 辅助函数 - 国际化翻译
 // =============================================
+const TREECLIP_LOCALE_STORAGE_KEY = 'treeclip-popup-locale';
+const SUPPORTED_TREECLIP_LOCALES = new Set(['zh_CN', 'en']);
+const treeClipLocaleCache = new Map();
+let activeTreeClipLocale = null;
+let activeTreeClipMessages = null;
+
+function getManualLocaleMessage(key, substitutions) {
+  const entry = activeTreeClipMessages?.[key];
+  if (!entry?.message) return '';
+
+  let message = entry.message;
+  Object.entries(entry.placeholders || {}).forEach(([name, placeholder]) => {
+    const position = Number(String(placeholder.content || '').match(/\$(\d+)/)?.[1]);
+    const replacement = Number.isInteger(position) ? (substitutions[position - 1] || '') : '';
+    message = message.replace(new RegExp(`\\$${name}\\$`, 'gi'), replacement);
+  });
+  return message.replace(/\$\$/g, '$');
+}
+
 const t = (key, ...args) => {
   // 如果第一个参数是数组，则直接使用它作为占位符替换数组
   // 否则使用 args 数组本身
   const substitutions = (args.length === 1 && Array.isArray(args[0])) ? args[0] : args;
   // chrome.i18n.getMessage 的第二个参数要求是字符串或字符串数组
   // 确保所有参数都转换为字符串
-  const stringSubstitutions = Array.isArray(substitutions) 
-    ? substitutions.map(String) 
-    : String(substitutions);
+  const stringSubstitutions = Array.isArray(substitutions)
+    ? substitutions.map(String)
+    : [String(substitutions)];
+  const manualMessage = getManualLocaleMessage(key, stringSubstitutions);
+  if (manualMessage) return manualMessage;
   return chrome.i18n.getMessage(key, stringSubstitutions) || key;
 };
+
+async function setTreeClipLocale(locale) {
+  if (!SUPPORTED_TREECLIP_LOCALES.has(locale)) return false;
+  if (activeTreeClipLocale === locale && activeTreeClipMessages) return true;
+
+  try {
+    let messages = treeClipLocaleCache.get(locale);
+    if (!messages) {
+      messages = await new Promise(resolve => {
+        chrome.runtime.sendMessage({ type: 'treeclip-get-locale-messages', locale }, response => {
+          if (chrome.runtime.lastError || !response?.ok) {
+            resolve(null);
+            return;
+          }
+          resolve(response.messages);
+        });
+      });
+      if (!messages) return false;
+      treeClipLocaleCache.set(locale, messages);
+    }
+    activeTreeClipLocale = locale;
+    activeTreeClipMessages = messages;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const {
+  escapeCssIdentifier,
+  escapeHtml,
+  formatSelectedTexts,
+  getElementClassName,
+  getElementTypeKey,
+  getNearestViewportAnchor,
+  getHandleTargetDetent,
+  getTextFieldCandidates,
+  getSummaryTargetDetent,
+  matchesElementType,
+  normalizeShortcutKey,
+  parseElementTypeKey
+} = globalThis.TreeClipCore;
 
 // =============================================
 // 全局状态管理 - 追踪用户交互和选中元素的状态变量
 // =============================================
-// 存储已点击的元素
-let clickedElements = [];
 // 是否正在按住Shift键
 let isShiftPressed = false;
 // 存储被选中的元素
 let selectedElements = [];
 // 存储当前使用的选择器
 let currentSelector = '';
-// 存储选择器的层级历史
-let selectorHistory = [];
-// 当前选择器在历史中的索引
-let selectorHistoryIndex = -1;
 // 储存第一个点击元素的父元素链
 let parentChain = [];
 // 当前在父元素链中的索引
@@ -58,6 +116,7 @@ let isSelecting = false;
 let selectBox = null;
 let startX = 0;
 let startY = 0;
+let selectAudioContext = null;
 // 剪贴板格式设置
 let clipboardFormat = 'newline'; // 可选值: newline, space, comma
 // 新的细粒度清理选项状态变量
@@ -69,7 +128,7 @@ let removeChinese = false;      // 移除中文字符
 let removeNumbers = false;      // 移除数字
 let removeDuplicates = false;     // 移除重复项
 // 新增：是否启用实时复制
-let isRealtimeCopyEnabled = true; // 默认开启
+let isRealtimeCopyEnabled = false; // 默认关闭
 
 // 自定义快捷键配置
 let selectKeyConfig = { keys: ['Shift'] }; // 默认选择键为Shift
@@ -79,28 +138,179 @@ let isShowingKeyConfig = false; // 是否正在显示快捷键配置面板
 let isCapturingKeys = false; // 是否正在捕获按键
 let currentCaptureTarget = ''; // 当前正在捕获按键的目标
 let lastCaptureTarget = ''; // 最后一次捕获按键的目标，用于显示保存效果
+let keyConfigOutsideMouseDownHandler = null;
 let isCopyKeyPressed = false; // 跟踪复制键是否处于按下状态
 let selectKeyCombinationActive = false; // 跟踪选择键组合是否已经激活
 
-// UI状态：是否最小化
-let isUIMinimized = false; // 默认为展开状态
+// 两层界面状态：底部操作条始终显示，详情面板按需展开
+let isDetailsPanelOpen = false;
+let isActionBarCompact = false;
+let preferredCollapsedDetent = 'actions';
+let copyFeedbackTimeoutId = null;
+let isDetailsTransitioning = false;
+let pendingShellMorphRect = null;
+let floatingBoxCenter = null;
+let floatingBoxAnchor = 'bottom';
+let floatingBoxSideTop = null;
+let floatingBoxFreeBottom = null;
+const detentSizeCache = {};
 // 是否隐藏相同元素类型检测提示
 let hideTypePrompt = false;
+let typePromptTimeoutId = null;
 // 元素层级是否展开显示
 let isHierarchyExpanded = false;
+let isHierarchySectionOpen = false;
 // 输出格式区块是否展开
 let isOutputFormatExpanded = false;
-// 搜索区块是否展开
-let isSearchExpanded = false;
-// 快捷键配置区块是否展开
-let isKeyConfigExpanded = false;
+// =============================================
+// 选择高亮管理 - 仅维护 TreeClip 自己的标记
+// =============================================
+const SELECTED_ELEMENT_ATTRIBUTE = 'data-treeclip-selected';
+const FLOATING_BOX_EDGE_GAP = 8;
+const FLOATING_BOX_SCROLLBAR_SAFE_GAP = 12;
+const SELECTION_UI_DETENT_STORAGE_KEY = 'batch-selector-ui-detent';
+const SELECTION_UI_COLLAPSED_DETENT_STORAGE_KEY = 'batch-selector-ui-collapsed-detent';
+const FLOATING_BOX_POSITION_STORAGE_KEY = 'batch-selector-floating-box-position';
+const HIERARCHY_SECTION_OPEN_STORAGE_KEY = 'batch-selector-hierarchy-section-open';
+const OUTPUT_SECTION_OPEN_STORAGE_KEY = 'batch-selector-output-section-open';
 
-// =============================================
-// 文本搜索相关状态变量
-// =============================================
-let searchTerm = ''; // 当前搜索的文本
-let searchResults = []; // 存储搜索结果（元素）
-let currentSearchResultIndex = -1; // 当前高亮的搜索结果索引
+function setSelectionKeyActive(active) {
+  isShiftPressed = active;
+  selectKeyCombinationActive = active;
+  document.body?.classList.toggle('treeclip-selection-key-active', active);
+  try {
+    const pendingMessage = chrome.runtime.sendMessage({ type: 'treeclip-selection-key-state', active });
+    pendingMessage?.catch?.(() => {});
+  } catch (e) {
+    /* 扩展重载或页面卸载时无需继续同步工具栏图标。 */
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!['treeclip-open-external-panel', 'treeclip-set-locale'].includes(message?.type)) return false;
+
+  void (async () => {
+    try {
+      if (message.locale) {
+        const localeApplied = await setTreeClipLocale(message.locale);
+        if (!localeApplied) throw new Error('Unable to load TreeClip locale');
+      }
+      refreshLocalizedTreeClipUI();
+
+      if (message.type === 'treeclip-open-external-panel') {
+        if (message.panel === 'shortcuts') showKeyConfigPanel();
+        else throw new Error('Unknown TreeClip external panel');
+      }
+      sendResponse({ ok: true });
+    } catch (error) {
+      sendResponse({ ok: false });
+    }
+  })();
+  return true;
+});
+
+function refreshLocalizedTreeClipUI() {
+  const selectionPanel = document.getElementById('batch-selector-notification');
+  if (selectionPanel && selectedElements.length > 0) updateNotification(selectedElements.length);
+
+  const typePrompt = document.getElementById('batch-selector-prompt');
+  if (typePrompt) {
+    const title = typePrompt.querySelector('[data-treeclip-type-prompt-title]');
+    const description = typePrompt.querySelector('[data-treeclip-type-prompt-description]');
+    const choice = typePrompt.querySelector('[data-treeclip-type-prompt-choice]');
+    const confirmButton = typePrompt.querySelector('#select-all-of-type-confirm');
+    const cancelButton = typePrompt.querySelector('#select-all-of-type-cancel');
+    if (title) title.textContent = t('prompt_batch_select');
+    if (description) {
+      description.textContent = t('prompt_batch_select_desc', typePrompt.dataset.treeclipElementDesc || '');
+    }
+    if (choice) choice.textContent = t('checkbox_dont_show');
+    if (confirmButton) {
+      confirmButton.textContent = `${t('btn_select_all')} (${typeSelectKeyConfig.keys.map(formatKeyForDisplay).join('+')})`;
+    }
+    if (cancelButton) cancelButton.textContent = t('btn_cancel');
+  }
+
+  if (isShowingKeyConfig) {
+    hideKeyConfigPanel();
+    showKeyConfigPanel();
+  }
+}
+
+function persistSelectionUIState() {
+  try {
+    chrome.storage.local.set({
+      [SELECTION_UI_DETENT_STORAGE_KEY]: getSelectionUIDetent(),
+      [SELECTION_UI_COLLAPSED_DETENT_STORAGE_KEY]: preferredCollapsedDetent
+    });
+  } catch (e) {
+    /* 页面关闭时可能无法写入扩展存储；当前会话状态仍然有效。 */
+  }
+}
+
+function persistFloatingBoxPosition() {
+  if (!floatingBoxCenter) return;
+  const viewportWidth = Math.max(window.innerWidth, 1);
+  const viewportHeight = Math.max(window.innerHeight, 1);
+  const position = {
+    anchor: floatingBoxAnchor,
+    centerXRatio: floatingBoxCenter.x / viewportWidth,
+    centerYRatio: floatingBoxCenter.y / viewportHeight,
+    sideTopRatio: floatingBoxSideTop === null ? null : floatingBoxSideTop / viewportHeight,
+    freeBottomRatio: floatingBoxFreeBottom === null ? null : floatingBoxFreeBottom / viewportHeight
+  };
+  try {
+    chrome.storage.local.set({ [FLOATING_BOX_POSITION_STORAGE_KEY]: position });
+  } catch (e) {
+    /* 页面关闭时可能无法写入扩展存储；当前会话状态仍然有效。 */
+  }
+}
+
+function restoreFloatingBoxPosition(rawPosition) {
+  let position = rawPosition;
+  if (typeof position === 'string') {
+    try { position = JSON.parse(position); } catch (e) { return; }
+  }
+  if (!position || typeof position !== 'object') return;
+
+  const anchors = new Set(['left', 'right', 'bottom', 'free']);
+  const clampRatio = value => Math.min(Math.max(Number(value), 0), 1);
+  const centerXRatio = Number(position.centerXRatio);
+  const centerYRatio = Number(position.centerYRatio);
+  if (!anchors.has(position.anchor) || !Number.isFinite(centerXRatio) || !Number.isFinite(centerYRatio)) return;
+
+  floatingBoxAnchor = position.anchor;
+  floatingBoxCenter = {
+    x: clampRatio(centerXRatio) * window.innerWidth,
+    y: clampRatio(centerYRatio) * window.innerHeight
+  };
+  const sideTopRatio = position.sideTopRatio === null ? NaN : Number(position.sideTopRatio);
+  const freeBottomRatio = position.freeBottomRatio === null ? NaN : Number(position.freeBottomRatio);
+  floatingBoxSideTop = Number.isFinite(sideTopRatio) ? clampRatio(sideTopRatio) * window.innerHeight : null;
+  floatingBoxFreeBottom = Number.isFinite(freeBottomRatio) ? clampRatio(freeBottomRatio) * window.innerHeight : null;
+}
+
+function getElementsByTypeKey(typeKey, root = document) {
+  const { tagName } = parseElementTypeKey(typeKey);
+  if (!tagName) return [];
+  return Array.from(root.querySelectorAll(tagName)).filter(element => matchesElementType(element, typeKey));
+}
+
+function markElementSelected(element) {
+  if (element?.setAttribute) {
+    element.setAttribute(SELECTED_ELEMENT_ATTRIBUTE, '');
+  }
+}
+
+function unmarkElementSelected(element) {
+  if (element?.removeAttribute) {
+    element.removeAttribute(SELECTED_ELEMENT_ATTRIBUTE);
+  }
+}
+
+function clearSelectionHighlights() {
+  document.querySelectorAll(`[${SELECTED_ELEMENT_ATTRIBUTE}]`).forEach(unmarkElementSelected);
+}
 
 // =============================================
 // 辅助函数 - 处理UI元素深度和缩进的计算
@@ -135,8 +345,13 @@ function getAdjustedLevelIndent(j, i, needCollapse, parentChain) {
 // =============================================
 // 检查是否按下了指定的组合键
 function isKeyCombinationPressed(event, keyConfig) {
-  // 如果没有配置键，返回false
-  if (!keyConfig || !keyConfig.keys || keyConfig.keys.length === 0) {
+  // 某些网站会派发没有 key 字段的合成 keydown；这类事件不应进入快捷键判断。
+  if (!event || typeof event.key !== 'string' || event.key.length === 0) {
+    return false;
+  }
+
+  // 忽略缺失、损坏或不是数组的快捷键配置。
+  if (!keyConfig || !Array.isArray(keyConfig.keys) || keyConfig.keys.length === 0) {
     return false;
   }
 
@@ -148,6 +363,7 @@ function isKeyCombinationPressed(event, keyConfig) {
   // 检查所有键是否都被按下
   // 对于修饰键，我们需要特殊处理
   for (const key of keyConfig.keys) {
+    if (typeof key !== 'string' || key.length === 0) return false;
     const lowerKey = key.toLowerCase();
 
     // 检查修饰键
@@ -177,6 +393,14 @@ function isKeyCombinationPressed(event, keyConfig) {
   return true;
 }
 
+function isEditableTarget(target) {
+  if (!(target instanceof Element)) return false;
+  return Boolean(
+    target.closest('input, textarea, select, [role="textbox"]') ||
+    target.isContentEditable
+  );
+}
+
 // 监听键盘按下事件
 document.addEventListener('keydown', function(event) {
   // 如果正在配置快捷键，不处理其他键盘事件
@@ -189,52 +413,25 @@ document.addEventListener('keydown', function(event) {
     return;
   }
 
+  const isEditing = isEditableTarget(event.target);
+
   // 按下选择键
-  const isSelectKeyPressed = isKeyCombinationPressed(event, selectKeyConfig);
+  const isSelectKeyPressed = !isEditing && isKeyCombinationPressed(event, selectKeyConfig);
 
   // 只有在之前未按下的情况下才设置状态
   if (isSelectKeyPressed && !isShiftPressed) {
-    isShiftPressed = true;
-    selectKeyCombinationActive = true; // 标记选择键组合已激活
-    // 添加临时样式到body，用于鼠标样式
-    document.body.classList.add('batch-selector-shift-pressed');
+    setSelectionKeyActive(true);
 
     // 记录当前按下的选择键组合
     //console.log('选择键组合已激活:', selectKeyConfig.keys.join('+'));
   }
-  // 如果之前按下了但现在没有按下完整组合键，且没有其他键干扰，则释放状态
-  else if (!isSelectKeyPressed && isShiftPressed && !selectKeyCombinationActive) {
-    isShiftPressed = false;
-    document.body.classList.remove('batch-selector-shift-pressed');
-
-    // 如果正在框选，取消框选
-    if (isSelecting) {
-      cancelBoxSelection();
-    }
-  }
-
   // 处理复制组合键 - 复制已选中的内容
   const isCopyKeyCombinationPressed = isKeyCombinationPressed(event, copyKeyConfig);
 
   // 如果复制键被按下，且之前不是按下状态，且有选中元素
-  if (isCopyKeyCombinationPressed && !isCopyKeyPressed && selectedElements.length > 0) {
+  if (!isEditing && isCopyKeyCombinationPressed && !isCopyKeyPressed && selectedElements.length > 0) {
     event.preventDefault();
-    // 先获取处理后的文本
-    const textToCopy = updateClipboard();
-    // 然后强制写入剪贴板，无论实时复制是否开启
-    if (textToCopy !== undefined && textToCopy !== null) { // 确保有内容可写
-        navigator.clipboard.writeText(textToCopy)
-            .then(() => {
-                // 显示复制成功提示
-                showTemporaryMessage(t('msg_copied'));
-            })
-            .catch(() => {
-                 showTemporaryMessage(t('msg_copy_failed'));
-                // console.error('复制组合键复制失败');
-            });
-    } else {
-        showTemporaryMessage(t('msg_no_content'));
-    }
+    copySelectionToClipboard();
   }
 
   // 更新复制键状态
@@ -252,33 +449,33 @@ document.addEventListener('keydown', function(event) {
 
   // 快捷键: 选择相同类型的元素
   if (isKeyCombinationPressed(event, typeSelectKeyConfig) &&
+      !isEditing &&
       (selectedElements.length > 0) &&
-      (!isViewingChildren) && // 在查看子元素时不触发
-      (document.activeElement?.id !== 'batch-selector-search-input')) { // 焦点不在搜索框时才触发
+      (!isViewingChildren)) { // 在查看子元素时不触发
     event.preventDefault();
     selectAllElements();
   }
 
   // 快捷键: Shift+向上键 - 扩大选择范围（固定使用Shift键）
-  if (event.shiftKey && event.key === 'ArrowUp' && selectedElements.length > 0) {
+  if (!isEditing && event.shiftKey && event.key === 'ArrowUp' && selectedElements.length > 0) {
     event.preventDefault();
     moveUp();
   }
 
   // 快捷键: Shift+向下键 - 缩小选择范围（固定使用Shift键）
-  if (event.shiftKey && event.key === 'ArrowDown' && selectedElements.length > 0) {
+  if (!isEditing && event.shiftKey && event.key === 'ArrowDown' && selectedElements.length > 0) {
     event.preventDefault();
     moveDown();
   }
 
   // 快捷键: Shift+向右键 - 查看元素内部内容（固定使用Shift键）
-  if (event.shiftKey && event.key === 'ArrowRight' && selectedElements.length > 0) {
+  if (!isEditing && event.shiftKey && event.key === 'ArrowRight' && selectedElements.length > 0) {
     event.preventDefault();
     viewInside();
   }
 
   // 快捷键: Shift+向左键 - 返回父元素视图（固定使用Shift键）
-  if (event.shiftKey && event.key === 'ArrowLeft' && isViewingChildren) {
+  if (!isEditing && event.shiftKey && event.key === 'ArrowLeft' && isViewingChildren) {
     event.preventDefault();
     returnToParentView();
   }
@@ -291,31 +488,13 @@ document.addEventListener('keyup', function(event) {
     return;
   }
 
-  // 获取当前按键的标准化名称
-  let keyName = event.key;
-
-  // 标准化按键名称
-  if (keyName === 'Control') keyName = 'Ctrl';
-  if (keyName === ' ') keyName = 'Space';
-  if (keyName === 'Meta') keyName = 'Meta';
+  const releasedKey = normalizeShortcutKey(event.key);
 
   // 检查是否释放了选择键中的任何一个键
   if (selectKeyConfig && selectKeyConfig.keys) {
-    // 检查释放的键是否在选择键配置中
-    const keyInConfig = selectKeyConfig.keys.some(k => k.toLowerCase() === keyName.toLowerCase());
-
-    // 检查修饰键特殊情况
-    const isCtrlReleased = (keyName === 'Ctrl' && selectKeyConfig.keys.includes('Ctrl'));
-    const isShiftReleased = (keyName === 'Shift' && selectKeyConfig.keys.includes('Shift'));
-    const isAltReleased = (keyName === 'Alt' && selectKeyConfig.keys.includes('Alt'));
-    const isMetaReleased = (keyName === 'Meta' && selectKeyConfig.keys.includes('Meta'));
-
-    // 如果释放的是配置中的任何键，或者是修饰键特殊情况
-    if (keyInConfig || isCtrlReleased || isShiftReleased || isAltReleased || isMetaReleased) {
-      isShiftPressed = false;
-      selectKeyCombinationActive = false; // 重置选择键组合状态
-      // 移除临时样式
-      document.body.classList.remove('batch-selector-shift-pressed');
+    const keyInConfig = selectKeyConfig.keys.some(key => normalizeShortcutKey(key) === releasedKey);
+    if (keyInConfig) {
+      setSelectionKeyActive(false);
 
       consecutiveSameTypeElements = [];
 
@@ -330,38 +509,46 @@ document.addEventListener('keyup', function(event) {
 
   // 检查是否释放了复制键中的任何一个键
   if (copyKeyConfig && copyKeyConfig.keys) {
-    // 检查释放的键是否在复制键配置中
-    const keyInConfig = copyKeyConfig.keys.some(k => k.toLowerCase() === keyName.toLowerCase());
-
-    // 检查修饰键特殊情况
-    const isCtrlReleased = (keyName === 'Ctrl' && copyKeyConfig.keys.includes('Ctrl'));
-    const isShiftReleased = (keyName === 'Shift' && copyKeyConfig.keys.includes('Shift'));
-    const isAltReleased = (keyName === 'Alt' && copyKeyConfig.keys.includes('Alt'));
-    const isMetaReleased = (keyName === 'Meta' && copyKeyConfig.keys.includes('Meta'));
-
-    // 如果释放的是配置中的任何键，或者是修饰键特殊情况
-    if (keyInConfig || isCtrlReleased || isShiftReleased || isAltReleased || isMetaReleased) {
+    const keyInConfig = copyKeyConfig.keys.some(key => normalizeShortcutKey(key) === releasedKey);
+    if (keyInConfig) {
       // 重置复制键状态
       isCopyKeyPressed = false;
     }
   }
 });
 
+function resetSelectionKeyOnPageExit() {
+  if (isShiftPressed || selectKeyCombinationActive) setSelectionKeyActive(false);
+  if (isSelecting) cancelBoxSelection();
+}
+
+window.addEventListener('blur', resetSelectionKeyOnPageExit);
+window.addEventListener('pagehide', resetSelectionKeyOnPageExit);
+
 // 添加CSS样式
 const style = document.createElement('style');
 style.textContent = `
-  .batch-selector-shift-pressed {
+  .treeclip-selection-key-active,
+  .treeclip-selection-key-active * {
     cursor: crosshair !important;
   }
-  .batch-selector-shift-pressed a,
-  .batch-selector-shift-pressed button,
-  .batch-selector-shift-pressed input,
-  .batch-selector-shift-pressed [role="button"],
-  .batch-selector-shift-pressed [onclick] {
-    pointer-events: none;
+  .treeclip-selection-key-active .batch-selector-ui,
+  .treeclip-selection-key-active .batch-selector-ui * {
+    cursor: default !important;
   }
-  .batch-selector-prevent-events {
-    pointer-events: none !important;
+  .treeclip-selection-key-active .batch-selector-ui button,
+  .treeclip-selection-key-active .batch-selector-ui button *,
+  .treeclip-selection-key-active .batch-selector-ui [role="button"],
+  .treeclip-selection-key-active .batch-selector-ui [role="button"] * {
+    cursor: pointer !important;
+  }
+  .treeclip-selection-key-active .batch-selector-ui button:disabled,
+  .treeclip-selection-key-active .batch-selector-ui button:disabled * {
+    cursor: not-allowed !important;
+  }
+  [${SELECTED_ELEMENT_ATTRIBUTE}] {
+    outline: 2px solid #1677ff !important;
+    outline-offset: 1px !important;
   }
   .batch-selector-ui {
     pointer-events: auto !important;
@@ -377,30 +564,833 @@ style.textContent = `
     -moz-user-select: none !important;
     -ms-user-select: none !important;
   }
+  .batch-selector-layer {
+    pointer-events: none !important;
+  }
+  .batch-selector-shell {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    max-width: calc(100vw - 32px);
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 16px;
+    color: #f7f9fc;
+    background: rgba(23, 32, 51, 0.88);
+    box-shadow: 0 18px 50px rgba(15, 23, 42, 0.3);
+    transform: translateX(-50%);
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    box-sizing: border-box;
+    transform-origin: bottom center;
+  }
+  .treeclip-floating-surface {
+    position: fixed;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 16px;
+    color: #f7f9fc;
+    background: rgba(23, 32, 51, 0.88);
+    box-shadow: 0 18px 50px rgba(15, 23, 42, 0.3);
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.38;
+    box-sizing: border-box;
+    animation: treeclip-floating-surface-in 180ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .treeclip-floating-header {
+    display: flex;
+    min-height: 42px;
+    padding: 8px 10px 7px 14px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .treeclip-floating-title {
+    margin: 0;
+    color: #f7f9fc;
+    font-size: 15px;
+    font-weight: 750;
+    line-height: 1.25;
+  }
+  .treeclip-floating-close {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    min-height: 28px;
+    padding: 0;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: #aebbd0;
+    background: transparent;
+    font: inherit;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .treeclip-floating-close:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .treeclip-floating-body {
+    padding: 10px 12px 12px;
+  }
+  .treeclip-floating-card {
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.055);
+  }
+  .treeclip-floating-button {
+    min-height: 29px;
+    padding: 5px 9px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px;
+    color: #edf3fb;
+    background: rgba(255, 255, 255, 0.08);
+    font: inherit;
+    cursor: pointer;
+  }
+  .treeclip-floating-button:hover {
+    background: rgba(255, 255, 255, 0.16);
+  }
+  .treeclip-floating-button-primary {
+    border-color: #3b82f6;
+    color: #fff;
+    background: #2563eb;
+  }
+  .treeclip-floating-button-primary:hover {
+    background: #1d4ed8;
+  }
+  .treeclip-key-config {
+    bottom: 20px;
+    left: 20px;
+    z-index: 10001;
+    width: min(330px, calc(100vw - 40px));
+    font-size: 13px;
+  }
+  .treeclip-key-config .treeclip-floating-body {
+    max-height: min(590px, calc(100vh - 84px));
+    overflow-y: auto;
+  }
+  .treeclip-shortcut-list {
+    display: grid;
+    gap: 7px;
+  }
+  .treeclip-shortcut-item {
+    padding: 8px;
+  }
+  .treeclip-shortcut-label {
+    margin-bottom: 5px;
+    color: #dbe5f3;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .treeclip-shortcut-display {
+    min-height: 30px;
+    padding: 5px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.2);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+    box-sizing: border-box;
+    cursor: pointer;
+  }
+  .treeclip-shortcut-description {
+    margin-top: 5px;
+    color: #93a4bc;
+    font-size: 11px;
+  }
+  .treeclip-shortcut-conflict {
+    display: none;
+    margin-top: 4px;
+    color: #fca5a5;
+    font-size: 11px;
+  }
+  .treeclip-shortcut-reference {
+    margin-top: 10px;
+    padding: 3px 10px;
+  }
+  .treeclip-shortcut-help {
+    margin: 8px 2px 0;
+    color: #93a4bc;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+  .treeclip-floating-footer {
+    display: flex;
+    min-height: 34px;
+    margin-top: 10px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .treeclip-floating-status {
+    min-width: 0;
+    color: #86efac;
+    font-size: 11px;
+    opacity: 0;
+    transition: opacity 0.3s ease-in-out;
+  }
+  .treeclip-guide-section-title {
+    padding: 7px 0 3px;
+    color: #93a4bc;
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: 0.35px;
+    text-transform: uppercase;
+  }
+  .treeclip-guide-row {
+    display: grid;
+    min-height: 34px;
+    padding: 6px 0;
+    grid-template-columns: minmax(98px, auto) 1fr;
+    align-items: center;
+    gap: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .treeclip-guide-row:first-child {
+    border-top: 0;
+  }
+  .treeclip-guide-keys {
+    color: #dbeafe;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .treeclip-guide-key {
+    display: inline-block;
+    padding: 2px 6px;
+    border: 1px solid rgba(96, 165, 250, 0.48);
+    border-radius: 5px;
+    color: #dbeafe;
+    background: rgba(59, 130, 246, 0.22);
+    font: inherit;
+    font-size: 11px;
+    line-height: 1.35;
+  }
+  .treeclip-guide-description {
+    color: #cbd5e1;
+    font-size: 12px;
+  }
+  .treeclip-type-prompt {
+    bottom: 20px;
+    left: 20px;
+    z-index: 10001;
+    width: min(380px, calc(100vw - 40px));
+    padding: 12px;
+    font-size: 13px;
+  }
+  .treeclip-type-prompt-header {
+    display: flex;
+    margin-bottom: 5px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .treeclip-type-prompt-title {
+    min-width: 0;
+    font-size: 14px;
+    font-weight: 750;
+  }
+  .treeclip-type-prompt-description {
+    margin-bottom: 10px;
+    color: #aebbd0;
+  }
+  .treeclip-type-prompt-actions {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .treeclip-type-prompt-actions .treeclip-floating-button-primary {
+    flex: 1;
+  }
+  .treeclip-type-prompt-choice {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #aebbd0;
+    font-size: 11px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .treeclip-type-prompt-choice input {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+  }
+  .treeclip-type-prompt-switch {
+    position: relative;
+    width: 28px;
+    height: 16px;
+    flex: 0 0 28px;
+    border-radius: 999px;
+    background: rgba(120, 130, 148, 0.5);
+    transition: background-color 180ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .treeclip-type-prompt-switch::after {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    content: "";
+    transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .treeclip-type-prompt-choice input:checked + .treeclip-type-prompt-switch {
+    background: #34c759;
+  }
+  .treeclip-type-prompt-choice input:checked + .treeclip-type-prompt-switch::after {
+    transform: translateX(12px);
+  }
+  .treeclip-type-prompt-choice input:focus-visible + .treeclip-type-prompt-switch {
+    outline: 2px solid #60a5fa;
+    outline-offset: 2px;
+  }
+  .treeclip-global-toast {
+    top: 50%;
+    left: 50%;
+    z-index: 10002;
+    max-width: min(420px, calc(100vw - 40px));
+    padding: 11px 16px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 650;
+    text-align: center;
+    transform: translate(-50%, -50%);
+  }
+  @keyframes treeclip-floating-surface-in {
+    from { opacity: 0; translate: 0 5px; scale: 0.98; }
+    to { opacity: 1; translate: 0 0; scale: 1; }
+  }
+  .batch-selector-shell-open {
+    width: min(360px, calc(100vw - 28px));
+    will-change: translate, scale, opacity;
+  }
+  .batch-selector-shell-dragging {
+    cursor: grabbing !important;
+  }
+  .batch-selector-action-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px 8px;
+    border: 0;
+    border-radius: 0;
+    color: #f7f9fc;
+    background: transparent;
+    box-shadow: none;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 12px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .batch-selector-shell-open .batch-selector-action-bar {
+    overflow-x: auto;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .batch-selector-action-bar-compact {
+    gap: 0;
+    padding: 8px 4px;
+    border-radius: 999px;
+  }
+  .batch-selector-action-bar-compact .batch-selector-action-summary {
+    min-height: 24px;
+    padding-block: 0;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+  }
+  .batch-selector-action-bar button,
+  .batch-selector-details button {
+    min-height: 29px;
+    padding: 5px 9px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px;
+    color: #edf3fb;
+    background: rgba(255, 255, 255, 0.08);
+    font: inherit;
+    cursor: pointer;
+  }
+  .batch-selector-action-bar button:hover,
+  .batch-selector-details button:hover {
+    background: rgba(255, 255, 255, 0.16);
+  }
+  .batch-selector-action-bar button:disabled,
+  .batch-selector-details button:disabled {
+    cursor: not-allowed;
+    opacity: 0.42;
+  }
+  .batch-selector-action-bar .batch-selector-primary-action {
+    border-color: #3b82f6;
+    background: #2563eb;
+    color: #fff;
+  }
+  .batch-selector-action-bar .batch-selector-primary-action:hover {
+    background: #1d4ed8;
+  }
+  .batch-selector-action-bar .batch-selector-danger-action {
+    padding-inline: 9px;
+    color: #fecaca;
+  }
+  .batch-selector-action-summary {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 6px 0 4px;
+    border-color: transparent !important;
+    color: inherit !important;
+    background: transparent !important;
+  }
+  .batch-selector-action-summary:hover {
+    background: rgba(255, 255, 255, 0.1) !important;
+  }
+  .batch-selector-action-count {
+    display: inline-grid;
+    min-width: 25px;
+    height: 25px;
+    padding: 0 6px;
+    place-items: center;
+    border-radius: 8px;
+    color: #dbeafe;
+    background: rgba(59, 130, 246, 0.22);
+    font-weight: 750;
+  }
+  .batch-selector-details {
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100vh - 112px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 5px 12px 12px;
+    border: 0;
+    border-radius: 0;
+    color: #f7f9fc;
+    background: transparent;
+    box-shadow: none;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1.38;
+    box-sizing: border-box;
+  }
+  .treeclip-details-title {
+    color: #fff;
+    font-size: 17px;
+    font-weight: 750;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+  }
+  .treeclip-selected-groups {
+    margin-top: 12px;
+  }
+  .treeclip-groups-label {
+    display: flex;
+    margin-bottom: 7px;
+    align-items: center;
+    gap: 6px;
+    color: #9facbf;
+    font-size: 0.76em;
+    font-weight: 650;
+    letter-spacing: 0.025em;
+    line-height: 1.2;
+  }
+  .treeclip-groups-label::before {
+    width: 3px;
+    height: 11px;
+    border-radius: 999px;
+    background: #60a5fa;
+    content: "";
+  }
+  .batch-selector-move-surface {
+    display: grid;
+    min-height: 20px;
+    place-items: center;
+    cursor: move;
+    touch-action: none;
+  }
+  .batch-selector-sheet-grabber {
+    display: grid !important;
+    width: 58px !important;
+    min-height: 20px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    place-items: center;
+    border: 0 !important;
+    border-radius: 999px !important;
+    background: transparent !important;
+    cursor: grab !important;
+    touch-action: none;
+  }
+  .batch-selector-sheet-grabber::before {
+    width: 31px;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.32);
+    content: "";
+    transition: transform 160ms ease, background-color 160ms ease;
+  }
+  .batch-selector-sheet-grabber:hover::before,
+  .batch-selector-sheet-pulling .batch-selector-sheet-grabber::before {
+    background: rgba(255, 255, 255, 0.5);
+    transform: scaleX(1.16);
+  }
+  .batch-selector-shell-compact .batch-selector-move-surface {
+    min-height: 0;
+    height: 0;
+    overflow: hidden;
+    transition: height 180ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .batch-selector-shell-compact .batch-selector-sheet-grabber {
+    width: 46px !important;
+    min-height: 20px !important;
+  }
+  .batch-selector-shell-compact .batch-selector-sheet-grabber::before {
+    width: 25px;
+    height: 3px;
+    opacity: 0;
+    transform: scaleX(0.72);
+    transition: opacity 140ms ease, transform 180ms ease, background-color 160ms ease;
+  }
+  .batch-selector-shell-compact:hover .batch-selector-move-surface,
+  .batch-selector-shell-compact:focus-within .batch-selector-move-surface,
+  .batch-selector-shell-compact.batch-selector-sheet-pulling .batch-selector-move-surface {
+    height: 20px;
+  }
+  .batch-selector-shell-compact:hover .batch-selector-sheet-grabber::before,
+  .batch-selector-shell-compact:focus-within .batch-selector-sheet-grabber::before,
+  .batch-selector-shell-compact .batch-selector-sheet-grabber:focus-visible::before,
+  .batch-selector-shell-compact.batch-selector-sheet-pulling .batch-selector-sheet-grabber::before {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  .batch-selector-sheet-pulling .batch-selector-sheet-grabber {
+    cursor: grabbing !important;
+  }
+  .batch-selector-shell-dragging .batch-selector-move-surface {
+    cursor: grabbing;
+  }
+  .treeclip-ios-disclosure-section {
+    margin-top: 9px;
+    padding-top: 7px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .treeclip-ios-section-header {
+    display: flex;
+    width: 100%;
+    min-height: 28px;
+    padding: 0 2px;
+    align-items: center;
+    justify-content: space-between;
+    color: #f7f9fc;
+    cursor: pointer;
+  }
+  .batch-selector-details .toggle-arrow {
+    color: #8e9aaf;
+    font-size: 0.78em;
+    transition: transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .treeclip-ios-settings-card {
+    overflow: hidden;
+    margin-top: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.055);
+  }
+  .treeclip-ios-settings-label {
+    padding: 7px 10px 0;
+    color: #9facbf;
+    font-size: 0.76em;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+  }
+  .treeclip-ios-segmented {
+    display: grid;
+    height: 36px;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 3px;
+    margin: 8px;
+    padding: 3px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.24);
+    box-sizing: border-box;
+  }
+  .treeclip-ios-segmented label {
+    position: relative;
+    display: block;
+    height: 30px;
+    cursor: pointer;
+  }
+  .treeclip-ios-segmented input,
+  .treeclip-ios-clean-grid input,
+  .treeclip-ios-switch-input {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+  }
+  .treeclip-ios-segmented span {
+    display: grid;
+    width: 100%;
+    height: 30px;
+    min-height: 30px;
+    padding: 0 7px;
+    place-items: center;
+    border-radius: 7px;
+    color: #aebbd0;
+    font-size: 0.8em;
+    line-height: 1;
+    box-sizing: border-box;
+    transition: color 160ms ease, background-color 160ms ease, box-shadow 160ms ease, transform 120ms ease;
+  }
+  .treeclip-ios-segmented label:active span {
+    transform: scale(0.96);
+  }
+  .treeclip-ios-segmented input:checked + span {
+    color: #fff;
+    background: rgba(82, 96, 122, 0.94);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  }
+  .treeclip-ios-segmented input:focus-visible + span,
+  .treeclip-ios-clean-grid input:focus-visible + span,
+  .treeclip-ios-switch-input:focus-visible + .treeclip-ios-switch {
+    outline: 2px solid #60a5fa;
+    outline-offset: 2px;
+  }
+  .treeclip-ios-clean-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin: 8px;
+  }
+  .treeclip-ios-clean-grid label {
+    position: relative;
+    min-width: 0;
+    cursor: pointer;
+  }
+  .treeclip-ios-clean-chip {
+    display: flex;
+    min-height: 33px;
+    padding: 6px 8px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    color: #aebbd0;
+    background: rgba(255, 255, 255, 0.045);
+    font-size: 0.8em;
+    line-height: 1.15;
+    text-align: center;
+    box-sizing: border-box;
+    transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease, transform 120ms ease;
+  }
+  .treeclip-ios-clean-grid label:active .treeclip-ios-clean-chip {
+    transform: scale(0.97);
+  }
+  .treeclip-ios-clean-grid input:checked + .treeclip-ios-clean-chip {
+    border-color: rgba(96, 165, 250, 0.55);
+    color: #eff6ff;
+    background: rgba(59, 130, 246, 0.2);
+  }
+  .treeclip-ios-behavior-card {
+    margin-top: 7px;
+  }
+  .batch-selector-group-count {
+    display: inline-grid;
+    flex: 0 0 auto;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    place-items: center;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.08);
+    font-size: 0.74em;
+  }
+  .batch-selector-flow-grid {
+    display: flex;
+    max-width: 100%;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: start;
+  }
+  .batch-selector-flow-item {
+    display: flex !important;
+    width: auto !important;
+    max-width: 100%;
+    min-width: 0;
+    flex: 0 1 auto;
+    margin: 0 !important;
+    padding: 5px 7px !important;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82em;
+    text-align: left;
+  }
+  .batch-selector-flow-wide {
+    width: 100% !important;
+    flex-basis: 100%;
+  }
+  .batch-selector-flow-preview {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: #fff;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .batch-selector-hierarchy-chip {
+    display: block;
+    min-width: 0;
+    margin: 0;
+    padding: 2px 6px;
+    overflow: hidden;
+    border: 1px solid rgba(96, 165, 250, 0.48);
+    border-radius: 5px;
+    color: #dbeafe;
+    background: rgba(59, 130, 246, 0.22);
+    font-size: 0.76em;
+    font-weight: 650;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .batch-selector-flow-item:hover .batch-selector-hierarchy-chip {
+    border-color: rgba(96, 165, 250, 0.72);
+    background: rgba(59, 130, 246, 0.32);
+  }
+  .batch-selector-group-hierarchy {
+    flex: 0 1 auto;
+    max-width: 260px;
+  }
+  .batch-selector-field-hierarchy {
+    flex: 0 1 42%;
+    max-width: 150px;
+  }
+  .treeclip-ios-setting-row {
+    position: relative;
+    display: flex;
+    min-height: 35px;
+    margin-left: 10px;
+    padding: 5px 10px 5px 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    color: #edf3fb;
+    font-size: 0.84em;
+    cursor: pointer;
+  }
+  .treeclip-ios-settings-label + .treeclip-ios-setting-row {
+    border-top: 0;
+  }
+  .treeclip-ios-setting-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+  }
+  .treeclip-ios-setting-copy small {
+    margin-top: 2px;
+    color: #8996aa;
+    font-size: 0.88em;
+  }
+  .treeclip-ios-switch {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    flex: 0 0 36px;
+    border-radius: 999px;
+    background: rgba(120, 130, 148, 0.46);
+    transition: background-color 180ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .treeclip-ios-switch::after {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+    content: "";
+    transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .treeclip-ios-switch-input:checked + .treeclip-ios-switch {
+    background: #34c759;
+  }
+  .treeclip-ios-switch-input:checked + .treeclip-ios-switch::after {
+    transform: translateX(16px);
+  }
+  .batch-selector-copy-feedback {
+    animation: treeclip-copy-tap 180ms ease-out;
+  }
+  @keyframes treeclip-copy-tap {
+    0%, 100% { transform: scale(1); }
+    45% { transform: scale(0.94); }
+  }
+  @media (max-width: 700px) {
+    .batch-selector-shell {
+      right: auto;
+      bottom: 12px;
+      left: 50%;
+      max-width: calc(100vw - 24px);
+      width: max-content;
+      transform: translateX(-50%);
+    }
+    .batch-selector-shell-open {
+      right: 12px;
+      left: 12px;
+      width: auto;
+      max-width: none;
+      transform: none;
+    }
+    .batch-selector-action-bar {
+      overflow-x: auto;
+    }
+    .batch-selector-details {
+      max-height: calc(100vh - 100px);
+    }
+    .treeclip-key-config,
+    .treeclip-type-prompt {
+      right: 12px;
+      left: 12px;
+      width: auto;
+      max-width: none;
+    }
+    .treeclip-guide-row {
+      grid-template-columns: minmax(90px, auto) 1fr;
+    }
+    .treeclip-type-prompt-actions {
+      flex-wrap: wrap;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .batch-selector-shell-open,
+    .batch-selector-sheet-grabber::before,
+    .batch-selector-copy-feedback,
+    .treeclip-floating-surface {
+      transition: none !important;
+      animation: none !important;
+    }
+  }
 `;
 document.head.appendChild(style);
-
-// 添加搜索高亮样式
-const searchHighlightStyle = document.createElement('style');
-searchHighlightStyle.textContent = `
-  .batch-selector-text-highlight {
-    background-color: rgba(255, 235, 59, 0.4) !important; /* 黄色背景高亮文本 */
-    color: black !important;
-    padding: 0 1px;
-    border-radius: 2px;
-    box-shadow: 0 0 0 1px rgba(255, 235, 59, 0.7);
-  }
-  .batch-selector-text-highlight-current {
-    background-color: rgba(255, 152, 0, 0.5) !important; /* 橙色背景高亮当前文本 */
-    color: black !important;
-    box-shadow: 0 0 0 1px rgba(255, 152, 0, 0.8);
-  }
-  .batch-selector-attribute-highlight {
-    outline: 2px dashed orange !important; /* 橙色虚线轮廓标记属性匹配 */
-    box-shadow: 0 0 5px rgba(255, 165, 0, 0.5) !important;
-  }
-`;
-document.head.appendChild(searchHighlightStyle);
 
 // =============================================
 // 鼠标事件处理 - 捕获阶段的事件处理
@@ -439,19 +1429,6 @@ document.addEventListener('mousedown', function(event) {
       startBoxSelection();
     }
 
-    // 对于链接和按钮等交互元素，禁用点击行为
-    if (event.target.tagName === 'A' ||
-        event.target.tagName === 'BUTTON' ||
-        event.target.tagName === 'INPUT' ||
-        event.target.hasAttribute('onclick') ||
-        event.target.getAttribute('role') === 'button') {
-      event.target.classList.add('batch-selector-prevent-events');
-
-      // 恢复正常行为的定时器
-      setTimeout(() => {
-        event.target.classList.remove('batch-selector-prevent-events');
-      }, 500);
-    }
   }
 }, true);
 
@@ -562,7 +1539,7 @@ function finishBoxSelection() {
     elementsInBox.forEach(el => {
       // 如果元素未被选中，添加它
       if (!selectedElements.includes(el)) {
-        el.style.outline = '2px solid blue';
+        markElementSelected(el);
         selectedElements.push(el);
       }
     });
@@ -574,9 +1551,7 @@ function finishBoxSelection() {
       collectParentChain(firstElement);
 
       // 更新当前元素类型
-      const tagName = firstElement.tagName.toLowerCase();
-      const className = firstElement.className || '';
-      currentElementTypeKey = `${tagName}.${className}`;
+      currentElementTypeKey = getElementTypeKey(firstElement);
     }
 
     // 更新UI
@@ -617,11 +1592,6 @@ function findElementsInBox(boxRect) {
 
   // 第一遍：收集所有框内且有意义的元素
   potentialElements.forEach(el => {
-    // 跳过隐藏或无法交互的元素
-    if (isElementHiddenOrDisabled(el)) {
-      return;
-    }
-
     // 跳过扩展自身的UI元素
     if (el.closest('.batch-selector-ui') ||
         el.id === 'batch-selector-notification' ||
@@ -630,6 +1600,11 @@ function findElementsInBox(boxRect) {
         el.id === 'batch-selector-global-msg' ||
         el.id === 'batch-selector-box' ||
         el.classList.contains('batch-selector-ui')) {
+      return;
+    }
+
+    const computedStyle = window.getComputedStyle(el);
+    if (isElementHiddenOrDisabled(el, computedStyle)) {
       return;
     }
 
@@ -649,7 +1624,7 @@ function findElementsInBox(boxRect) {
     const overlap = getOverlapPercentage(adjustedElRect, boxRect);
 
     if (overlap > 0.5) { // 提高阈值到50%以上的重叠算作选中
-      if (isSignificantElement(el)) {
+      if (isSignificantElement(el, computedStyle)) {
         preFilteredElements.push({
           element: el,
           depth: getElementDepth(el)
@@ -660,11 +1635,6 @@ function findElementsInBox(boxRect) {
 
   // 按深度排序所有预筛选的元素（从浅到深）
   preFilteredElements.sort((a, b) => a.depth - b.depth);
-
-  // 创建一个函数来检查两个元素是否存在嵌套关系
-  const isNested = (parent, child) => {
-    return parent.element.contains(child.element);
-  };
 
   // 第二遍：过滤掉嵌套的元素，只保留最浅层级
   for (let i = 0; i < preFilteredElements.length; i++) {
@@ -702,9 +1672,7 @@ function getElementDepth(el) {
 }
 
 // 检查元素是否隐藏或禁用
-function isElementHiddenOrDisabled(el) {
-  const style = window.getComputedStyle(el);
-
+function isElementHiddenOrDisabled(el, style = window.getComputedStyle(el)) {
   // 检查元素是否可见
   if (style.display === 'none' ||
       style.visibility === 'hidden' ||
@@ -744,7 +1712,7 @@ function getOverlapPercentage(rect1, rect2) {
 }
 
 // 检查元素是否对用户有意义
-function isSignificantElement(el) {
+function isSignificantElement(el, style = window.getComputedStyle(el)) {
   // 忽略宽度或高度太小的元素
   if (el.offsetWidth < 5 || el.offsetHeight < 5) {
     return false;
@@ -772,12 +1740,11 @@ function isSignificantElement(el) {
   // 检查元素是否可点击
   if (el.hasAttribute('onclick') ||
       el.hasAttribute('href') ||
-      window.getComputedStyle(el).cursor === 'pointer') {
+      style.cursor === 'pointer') {
     return true;
   }
 
   // 检查是否有意义的样式特征(如边框、背景色等)
-  const style = window.getComputedStyle(el);
   if (style.border !== 'none' ||
       style.borderRadius !== '0px' ||
       style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent') {
@@ -804,88 +1771,37 @@ function isSignificantElement(el) {
   return false;
 }
 
-// 优化选择元素列表，移除嵌套的元素
-function optimizeSelectedElements(elements) {
-  if (elements.length <= 1) return elements;
-
-  // 优先选择最浅层级的元素
-  const optimized = [];
-
-  // 将元素按DOM树深度排序
-  const elementsWithDepth = elements.map(el => {
-    // 计算元素在DOM树中的深度
-    let depth = 0;
-    let current = el;
-    while (current && current !== document.documentElement) {
-      depth++;
-      current = current.parentElement;
-    }
-    return { element: el, depth: depth };
-  });
-
-  // 按深度排序，浅的在前面
-  elementsWithDepth.sort((a, b) => a.depth - b.depth);
-
-  // 跟踪已处理的元素
-  const processed = new Set();
-
-  // 优先考虑最浅层级的元素
-  for (const { element } of elementsWithDepth) {
-    if (processed.has(element)) continue;
-
-    // 标记当前元素为已处理
-    processed.add(element);
-
-    // 检查这个元素是否覆盖了其他未处理的元素
-    let hasNestedElements = false;
-
-    for (const { element: otherElement } of elementsWithDepth) {
-      if (otherElement !== element && !processed.has(otherElement)) {
-        if (element.contains(otherElement)) {
-          // 如果当前元素包含其他元素，标记该其他元素为已处理
-          processed.add(otherElement);
-          hasNestedElements = true;
-        }
-      }
-    }
-
-    // 添加当前元素到优化列表
-    optimized.push(element);
-  }
-
-  return optimized;
-}
-
 // =============================================
 // 用户反馈系统 - 提供视觉和听觉反馈
 // =============================================
 // 播放选择声音（可选）
 function playSelectSound() {
-  // 创建一个音频上下文
   try {
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    selectAudioContext ??= new AudioContextClass();
 
     // 创建一个振荡器
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
+    const oscillator = selectAudioContext.createOscillator();
+    const gainNode = selectAudioContext.createGain();
 
     // 设置音量
-    gainNode.gain.value = 0.1;
+    gainNode.gain.setValueAtTime(0.1, selectAudioContext.currentTime);
 
     // 连接节点
     oscillator.connect(gainNode);
-    gainNode.connect(audioContext.destination);
+    gainNode.connect(selectAudioContext.destination);
 
     // 设置频率和类型
     oscillator.type = 'sine';
     oscillator.frequency.value = 600;
 
     // 设置衰减
-    gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.3);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, selectAudioContext.currentTime + 0.3);
 
     // 播放音频
     oscillator.start();
-    oscillator.stop(audioContext.currentTime + 0.3);
+    oscillator.stop(selectAudioContext.currentTime + 0.3);
   } catch (e) {
     // console.log('无法播放选择声音', e);
   }
@@ -968,7 +1884,7 @@ document.addEventListener('click', function(event) {
 
     if (index !== -1) {
       // 已经选中的元素被再次点击，取消选择
-      clickedElement.style.outline = '';
+      unmarkElementSelected(clickedElement);
       selectedElements.splice(index, 1);
 
       // 更新通知
@@ -982,16 +1898,14 @@ document.addEventListener('click', function(event) {
   }
 
   // 高亮显示点击的元素并添加到已选中列表
-  clickedElement.style.outline = '2px solid blue';
+  markElementSelected(clickedElement);
   selectedElements.push(clickedElement);
 
   // 更新父元素链，记录最新点击元素的层级
   collectParentChain(clickedElement);
 
   // 更新当前选中的元素类型
-  const tagName = clickedElement.tagName.toLowerCase();
-  const className = clickedElement.className || '';
-  currentElementTypeKey = `${tagName}.${className}`;
+  currentElementTypeKey = getElementTypeKey(clickedElement);
 
   // 始终显示最新点击的元素信息
   showElementInfo(clickedElement, selectedElements.length);
@@ -1014,7 +1928,7 @@ function checkConsecutiveSameTypeElements(element) {
   const elementInfo = {
     element: element,
     tagName: element.tagName,
-    className: element.className
+    className: getElementClassName(element)
   };
 
   // 添加到连续元素数组
@@ -1052,20 +1966,7 @@ function showSelectAllOfTypePrompt(elementInfo) {
   if (!promptContainer) {
     promptContainer = document.createElement('div');
     promptContainer.id = 'batch-selector-prompt';
-    promptContainer.style.position = 'fixed';
-    promptContainer.style.bottom = '20px';
-    promptContainer.style.left = '20px'; // 改为左侧
-    promptContainer.style.padding = '10px 15px'; // 减小内边距
-    promptContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.85)';
-    promptContainer.style.color = 'white';
-    promptContainer.style.borderRadius = '5px';
-    promptContainer.style.zIndex = '10001';
-    promptContainer.style.maxWidth = '350px';
-    promptContainer.style.boxShadow = '0 2px 10px rgba(0,0,0,0.3)';
-    promptContainer.style.fontFamily = 'system-ui, -apple-system, sans-serif';
-    promptContainer.style.fontSize = '14px';
-    promptContainer.classList.add('batch-selector-ui');
-    promptContainer.setAttribute('class', 'batch-selector-ui');
+    promptContainer.className = 'batch-selector-ui treeclip-floating-surface treeclip-type-prompt';
 
     // 阻止默认点击行为
     promptContainer.addEventListener('mousedown', function(e) {
@@ -1083,19 +1984,6 @@ function showSelectAllOfTypePrompt(elementInfo) {
     document.body.appendChild(promptContainer);
   }
 
-  // 生成对应的选择器
-  let selector = elementInfo.tagName.toLowerCase();
-
-  // 如果有类名，添加到选择器
-  if (elementInfo.className) {
-    const classes = elementInfo.className.split(' ');
-    classes.forEach(cls => {
-      if (cls.trim()) {
-        selector += '.' + cls.trim();
-      }
-    });
-  }
-
   // 获取更友好的元素描述
   let elementDesc = elementInfo.tagName.toLowerCase();
   if (elementInfo.className) {
@@ -1106,45 +1994,41 @@ function showSelectAllOfTypePrompt(elementInfo) {
   }
 
   // 获取当前"选择相同类型键"的格式化显示
-  const typeSelectKeyText = typeSelectKeyConfig.keys.map(formatKeyForDisplay).join('+');
+  const typeSelectKeyText = escapeHtml(typeSelectKeyConfig.keys.map(formatKeyForDisplay).join('+'));
+  promptContainer.dataset.treeclipElementDesc = elementDesc;
 
   // 显示提示内容 - 优化文本
   promptContainer.innerHTML = `
-    <div style="margin-bottom: 8px;">
-      <strong>${t('prompt_batch_select')}</strong>
-    </div>
-    <div style="margin-bottom: 10px; font-size: 13px;">
-      ${t('prompt_batch_select_desc', elementDesc)}
-    </div>
-    <div style="display: flex; align-items: center; gap: 8px;">
-      <button id="select-all-of-type-confirm" class="batch-selector-ui" style="padding: 4px 10px; background-color: rgba(255,255,255,0.3); border: none; color: white; border-radius: 3px; cursor: pointer; flex: 1;">${t('btn_select_all')} (${typeSelectKeyText})</button>
-      <button id="select-all-of-type-cancel" class="batch-selector-ui" style="padding: 4px 10px; background-color: rgba(255,255,255,0.15); border: none; color: white; border-radius: 3px; cursor: pointer;">${t('btn_cancel')}</button>
-      <label style="
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        font-size: 0.8em;
-        cursor: pointer;
-        white-space: nowrap;
-      ">
-        <input type="checkbox" id="hide-type-prompt" class="batch-selector-ui" style="margin:0; transform: scale(0.85);">
-        <span>${t('checkbox_dont_show')}</span>
+    <div class="treeclip-type-prompt-header">
+      <div class="treeclip-type-prompt-title" data-treeclip-type-prompt-title>${t('prompt_batch_select')}</div>
+      <label class="treeclip-type-prompt-choice">
+        <input type="checkbox" id="hide-type-prompt" class="batch-selector-ui">
+        <span class="treeclip-type-prompt-switch" aria-hidden="true"></span>
+        <span data-treeclip-type-prompt-choice>${t('checkbox_dont_show')}</span>
       </label>
+    </div>
+    <div class="treeclip-type-prompt-description" data-treeclip-type-prompt-description>${t('prompt_batch_select_desc', escapeHtml(elementDesc))}</div>
+    <div class="treeclip-type-prompt-actions">
+      <button id="select-all-of-type-confirm" class="batch-selector-ui treeclip-floating-button treeclip-floating-button-primary">${t('btn_select_all')} (${typeSelectKeyText})</button>
+      <button id="select-all-of-type-cancel" class="batch-selector-ui treeclip-floating-button">${t('btn_cancel')}</button>
     </div>
   `;
 
   // 设置自动消失计时器
-  const promptTimeout = setTimeout(() => {
+  if (typePromptTimeoutId !== null) {
+    clearTimeout(typePromptTimeoutId);
+  }
+  typePromptTimeoutId = setTimeout(() => {
     if (document.body.contains(promptContainer)) {
-      document.body.removeChild(promptContainer);
+      promptContainer.remove();
     }
+    typePromptTimeoutId = null;
   }, 8000);
 
-  // 添加按钮事件
-  setTimeout(() => {
-    const confirmButton = document.getElementById('select-all-of-type-confirm');
-    const cancelButton = document.getElementById('select-all-of-type-cancel');
-    const hidePromptCheckbox = document.getElementById('hide-type-prompt');
+  // innerHTML设置后即可同步绑定，避免重复提示时旧任务绑定到新按钮。
+    const confirmButton = promptContainer.querySelector('#select-all-of-type-confirm');
+    const cancelButton = promptContainer.querySelector('#select-all-of-type-cancel');
+    const hidePromptCheckbox = promptContainer.querySelector('#hide-type-prompt');
 
     if (hidePromptCheckbox) {
       hidePromptCheckbox.addEventListener('change', function() {
@@ -1162,10 +2046,11 @@ function showSelectAllOfTypePrompt(elementInfo) {
     if (confirmButton) {
       confirmButton.classList.add('batch-selector-ui');
       confirmButton.addEventListener('click', function() {
-        clearTimeout(promptTimeout);
+        clearTimeout(typePromptTimeoutId);
+        typePromptTimeoutId = null;
 
         // 检查是否选中了"不再提示"
-        const hidePromptCheckbox = document.getElementById('hide-type-prompt');
+        const hidePromptCheckbox = promptContainer.querySelector('#hide-type-prompt');
         if (hidePromptCheckbox && hidePromptCheckbox.checked) {
           hideTypePrompt = true;
           // 保存设置到存储
@@ -1177,18 +2062,19 @@ function showSelectAllOfTypePrompt(elementInfo) {
           }
         }
 
-        selectAllOfType(selector);
-        document.body.removeChild(promptContainer);
+        selectAllOfType();
+        promptContainer.remove();
       });
     }
 
     if (cancelButton) {
       cancelButton.classList.add('batch-selector-ui');
       cancelButton.addEventListener('click', function() {
-        clearTimeout(promptTimeout);
+        clearTimeout(typePromptTimeoutId);
+        typePromptTimeoutId = null;
 
         // 检查是否选中了"不再提示"
-        const hidePromptCheckbox = document.getElementById('hide-type-prompt');
+        const hidePromptCheckbox = promptContainer.querySelector('#hide-type-prompt');
         if (hidePromptCheckbox && hidePromptCheckbox.checked) {
           hideTypePrompt = true;
           // 保存设置到存储
@@ -1200,25 +2086,18 @@ function showSelectAllOfTypePrompt(elementInfo) {
           }
         }
 
-        document.body.removeChild(promptContainer);
+        promptContainer.remove();
       });
     }
-  }, 0);
 }
 
 // 选择所有相同类型的元素
-function selectAllOfType(selector) {
-  // console.log('执行selectAllOfType，选择器:', selector);
-
+function selectAllOfType() {
   // 如果没有当前选中元素类型，则无法进行精确匹配
   if (!currentElementTypeKey) {
     // console.log('未指定当前元素类型，无法精确匹配');
     return;
   }
-
-  // 解析当前元素类型
-  const [targetTagName, targetClassName] = currentElementTypeKey.split('.');
-  // console.log('目标元素类型:', targetTagName, '目标类名:', targetClassName);
 
   // 清除当前未匹配的元素
   const currentTypeElements = [];
@@ -1226,49 +2105,32 @@ function selectAllOfType(selector) {
 
   // 分离当前类型元素和其他元素
   selectedElements.forEach(el => {
-    const elTagName = el.tagName.toLowerCase();
-    const elClassName = el.className || '';
-
-    // 检查是否匹配当前类型
-    if (elTagName === targetTagName && elClassName === targetClassName) {
+    if (matchesElementType(el, currentElementTypeKey)) {
       currentTypeElements.push(el);
     } else {
       otherElements.push(el);
       // 不再清除其他元素的高亮，保留所有已选中元素的蓝框
       // 确保元素仍然有高亮样式
-      if (el && el.style && !el.style.outline) {
-        el.style.outline = '2px solid blue';
-      }
+      markElementSelected(el);
     }
   });
 
-  // 在文档中查找所有具有相同标签的元素
-  const allTagElements = document.querySelectorAll(targetTagName);
-  // console.log(`找到 ${allTagElements.length} 个标签为 ${targetTagName} 的元素`);
+  const matchingElements = getElementsByTypeKey(currentElementTypeKey);
 
   // 已选元素映射，避免重复添加
-  const selectedMap = new Map();
-  currentTypeElements.forEach(el => selectedMap.set(el, true));
-  otherElements.forEach(el => selectedMap.set(el, true)); // 确保所有已选元素都在映射中
+  const selectedMap = new Set(selectedElements);
 
   // 选择具有完全相同类的元素
   let newSelectedCount = 0;
 
-  allTagElements.forEach(el => {
-    const elClassName = el.className || '';
-
-    // 严格匹配：确保类名完全相同，而不是部分匹配
-    if (elClassName === targetClassName) {
-      // 如果元素已在当前选择中，跳过
-      if (selectedMap.has(el)) {
-        return;
-      }
-
-      // 添加到选中列表并高亮
-      el.style.outline = '2px solid blue';
-      currentTypeElements.push(el);
-      newSelectedCount++;
+  matchingElements.forEach(el => {
+    if (selectedMap.has(el)) {
+      return;
     }
+
+    markElementSelected(el);
+    currentTypeElements.push(el);
+    newSelectedCount++;
   });
 
   // 将当前类型元素与其他保留的元素合并
@@ -1298,12 +2160,12 @@ function selectAllElements() {
   if (!currentElementTypeKey) {
     // 使用最后选择的元素设置当前元素类型
     const lastElement = selectedElements[selectedElements.length - 1];
-    currentElementTypeKey = `${lastElement.tagName.toLowerCase()}.${lastElement.className || ''}`;
+    currentElementTypeKey = getElementTypeKey(lastElement);
     // console.log('设置当前元素类型为:', currentElementTypeKey);
   }
 
   // 直接调用选择相同类型元素的方法
-  selectAllOfType(currentElementTypeKey);
+  selectAllOfType();
 }
 
 // =============================================
@@ -1362,36 +2224,7 @@ function collectParentChain(element) {
 
 // 收集元素的子元素链
 function collectChildrenChain(element) {
-  childrenChain = [];
-
-  // 添加直接子元素
-  let children = Array.from(element.children);
-  if (children.length > 0) {
-    childrenChain = childrenChain.concat(children);
-
-    // 查找特定子元素，如链接
-    const linkElements = element.querySelectorAll('a');
-    if (linkElements.length > 0) {
-      // 如果已有，则不重复添加
-      linkElements.forEach(link => {
-        if (!childrenChain.includes(link) && link.parentNode === element) {
-          childrenChain.push(link);
-        }
-      });
-    }
-
-    // 查找有文本内容的子元素
-    const textContainers = Array.from(element.querySelectorAll('*')).filter(el =>
-      el.textContent.trim() &&
-      !childrenChain.includes(el) &&
-      el.children.length === 0 &&
-      el.parentNode === element
-    );
-
-    if (textContainers.length > 0) {
-      childrenChain = childrenChain.concat(textContainers);
-    }
-  }
+  childrenChain = getTextFieldCandidates(element);
 }
 
 // 查看元素内部内容
@@ -1403,16 +2236,7 @@ function viewInside() {
 
   // 如果有特定元素类型被选中，使用该类型的第一个元素
   if (currentElementTypeKey) {
-    const [tagName, className] = currentElementTypeKey.split('.');
-
-    // 查找第一个匹配的元素
-    for (const el of selectedElements) {
-      if (el.tagName.toLowerCase() === tagName &&
-          (el.className || '') === className) {
-        referenceElement = el;
-        break;
-      }
-    }
+    referenceElement = selectedElements.find(el => matchesElementType(el, currentElementTypeKey)) || null;
   }
 
   // 如果没有找到特定类型的元素，使用第一个选中元素
@@ -1429,14 +2253,13 @@ function viewInside() {
     return;
   }
 
-  // 每次进入查看内部时，重置层级展开状态为折叠
-  isHierarchyExpanded = false;
-
   // 标记正在查看子元素
   isViewingChildren = true;
-
-  // 更新通知，显示子元素列表 (调用合并后的函数)
-  updateNotification(selectedElements.length); // <--- 修改点
+  if (getSelectionUIDetent() === 'details') {
+    updateNotification(selectedElements.length);
+  } else {
+    transitionSelectionUIDetent('details');
+  }
 }
 
 // 返回父元素视图
@@ -1454,50 +2277,20 @@ function selectChildElement(childIndex) {
 
   // 检查当前是否有特定元素类型被选中
   if (currentElementTypeKey) {
-    // 获取当前类型的所有元素
-    const [tagName, className] = currentElementTypeKey.split('.');
-    const typeElements = [];
-
-    // 找出所有匹配当前类型的元素
-    for (let i = 0; i < selectedElements.length; i++) {
-      const el = selectedElements[i];
-      if (el.tagName.toLowerCase() === tagName &&
-          (el.className || '') === className) {
-        typeElements.push(el);
-        // 清除原元素的蓝框高亮
-        el.style.outline = '';
-      }
-    }
+    const typeElements = selectedElements.filter(el => matchesElementType(el, currentElementTypeKey));
+    typeElements.forEach(unmarkElementSelected);
 
     // 从选中列表中移除当前类型的元素
-    selectedElements = selectedElements.filter(el =>
-      !(el.tagName.toLowerCase() === tagName &&
-        (el.className || '') === className)
-    );
+    selectedElements = selectedElements.filter(el => !matchesElementType(el, currentElementTypeKey));
 
-    // 获取子元素的标签和类名
-    const childTagName = childElement.tagName.toLowerCase();
-    const childClassName = childElement.className || '';
-    const newTypeKey = `${childTagName}.${childClassName}`;
+    const newTypeKey = getElementTypeKey(childElement);
 
     // 只在当前选中元素内部查找匹配的子元素，而不是在整个文档中查找
     const matchingChildElements = [];
 
     // 遍历每个当前类型的元素，查找其内部的匹配子元素
     typeElements.forEach(parentEl => {
-      // 构建一个选择器，只查找当前父元素内部的匹配子元素
-      let childSelector = childTagName;
-      if (childClassName) {
-        const classes = childClassName.split(' ');
-        classes.forEach(cls => {
-          if (cls.trim()) {
-            childSelector += `.${cls.trim()}`;
-          }
-        });
-      }
-
-      // 在父元素内部查询
-      const childrenOfParent = parentEl.querySelectorAll(childSelector);
+      const childrenOfParent = getElementsByTypeKey(newTypeKey, parentEl);
       childrenOfParent.forEach(child => {
         if (!matchingChildElements.includes(child)) {
           matchingChildElements.push(child);
@@ -1507,7 +2300,7 @@ function selectChildElement(childIndex) {
 
     // 添加匹配的子元素到选中列表
     matchingChildElements.forEach(el => {
-      el.style.outline = '2px solid blue';
+      markElementSelected(el);
       selectedElements.push(el);
     });
 
@@ -1559,19 +2352,20 @@ function generateRelativeSelector(element) {
     const text = element.textContent.trim();
 
     // 如果链接有类名，使用类名
-    if (element.className) {
-      const classes = element.className.split(' ');
+    const className = getElementClassName(element);
+    if (className) {
+      const classes = className.split(' ');
       for (const cls of classes) {
         if (cls.trim()) {
-          selector += `.${cls.trim()}`;
+          selector += `.${escapeCssIdentifier(cls.trim())}`;
         }
       }
       return selector;
     }
 
-    // 如果链接有title属性，使用部分title作为选择器
+    // 如果链接有title属性，使用内部匹配器，避免把页面内容拼进CSS选择器
     if (element.title) {
-      return `${selector}[title*="${element.title.split('.')[0]}"]`;
+      return `${selector}:treeclip-title-contains(${encodeURIComponent(element.title.split('.')[0])})`;
     }
 
     // 如果链接文本不空，使用文本内容作为选择器
@@ -1580,25 +2374,26 @@ function generateRelativeSelector(element) {
       const domainMatch = text.match(/([a-zA-Z0-9-]+)\.[a-zA-Z]{2,}(\.[a-zA-Z]{2,})?/);
       if (domainMatch) {
         const domainPart = domainMatch[1];
-        return `${selector}:contains("${domainPart}")`;
+        return `${selector}:treeclip-contains(${encodeURIComponent(domainPart)})`;
       }
 
       // 否则使用整个文本
-      return `${selector}:contains("${text}")`;
+      return `${selector}:treeclip-contains(${encodeURIComponent(text)})`;
     }
   }
 
   // 添加ID（如果有）
   if (element.id) {
-    return `${selector}#${element.id}`;
+    return `${selector}#${escapeCssIdentifier(element.id)}`;
   }
 
   // 添加类名（如果有）
-  if (element.className) {
-    const classes = element.className.split(' ');
+  const className = getElementClassName(element);
+  if (className) {
+    const classes = className.split(' ');
     classes.forEach(cls => {
       if (cls.trim()) {
-        selector += `.${cls.trim()}`;
+        selector += `.${escapeCssIdentifier(cls.trim())}`;
       }
     });
   }
@@ -1606,75 +2401,39 @@ function generateRelativeSelector(element) {
   return selector;
 }
 
-// 为特定元素生成选择器
-function generateSelectorForSpecificElement(element) {
-  let selector = element.tagName.toLowerCase();
-
-  // 添加ID（如果有）
-  if (element.id) {
-    return `${selector}#${element.id}`;
-  }
-
-  // 添加类名（如果有）
-  if (element.className) {
-    const classes = element.className.split(' ');
-    classes.forEach(cls => {
-      if (cls.trim()) {
-        selector += `.${cls.trim()}`;
-      }
-    });
-  }
-
-  // 尝试添加其他特性，如链接的href部分特征
-  if (selector === 'a' && element.href) {
-    // 提取URL中的一部分作为选择器，如域名或路径特征
-    try {
-      const url = new URL(element.href);
-      const domain = url.hostname;
-      if (domain) {
-        selector += `[href*="${domain}"]`;
-      }
-    } catch(e) {
-      // URL解析失败，则尝试使用其他特征
-      if (element.getAttribute('href')) {
-        const href = element.getAttribute('href');
-        if (href.startsWith('/')) {
-          // 对于站内链接
-          selector += `[href^="${href.split('/').slice(0, 2).join('/')}"]`;
-        }
-      }
+// TreeClip内部选择器扩展。保持在扩展作用域内，不修改宿主页面的document对象。
+function queryElements(selector) {
+  const customMatchers = [
+    {
+      marker: ':treeclip-title-contains(',
+      getValue: element => element.title || ''
+    },
+    {
+      marker: ':treeclip-contains(',
+      getValue: element => element.textContent || ''
     }
-  }
+  ];
 
-  return selector;
-}
+  try {
+    for (const { marker, getValue } of customMatchers) {
+      const markerIndex = selector.indexOf(marker);
+      if (markerIndex === -1) continue;
+      if (!selector.endsWith(')')) return [];
 
-// 添加jQuery-like的contains选择器实现
-function setupCustomSelectors() {
-  // 为文档添加一个自定义查询方法，支持:contains选择器
-  document.querySelectorForAll = function(selector) {
-    // 检查选择器是否包含:contains
-    if (selector.includes(':contains(')) {
-      const parts = selector.split(':contains(');
-      const baseSelector = parts[0];
-      const searchText = parts[1].slice(0, -1).replace(/"/g, '');
-
-      // 获取基础选择器的元素
-      const baseElements = document.querySelectorAll(baseSelector);
-
-      // 过滤包含指定文本的元素
-      return Array.from(baseElements).filter(el =>
-        el.textContent.includes(searchText)
+      const baseSelector = selector.slice(0, markerIndex);
+      const encodedSearchText = selector.slice(markerIndex + marker.length, -1);
+      const searchText = decodeURIComponent(encodedSearchText);
+      return Array.from(document.querySelectorAll(baseSelector)).filter(element =>
+        getValue(element).includes(searchText)
       );
     }
 
-    // 如果不包含特殊选择器，使用标准查询
-    return document.querySelectorAll(selector);
-  };
+    return Array.from(document.querySelectorAll(selector));
+  } catch (error) {
+    console.warn('TreeClip: 无法解析选择器', selector, error);
+    return [];
+  }
 }
-
-// 在页面加载时设置自定义选择器
-setupCustomSelectors();
 
 // =============================================
 // 选择更新系统 - 更新当前选中的元素集合
@@ -1686,7 +2445,7 @@ function updateSelection(newSelector, clearCurrent = false) {
   if (clearCurrent) {
     selectedElements.forEach(el => {
       if (el && el.style) {
-        el.style.outline = '';
+        unmarkElementSelected(el);
       }
     });
     selectedElements = [];
@@ -1695,44 +2454,31 @@ function updateSelection(newSelector, clearCurrent = false) {
   // 更新当前选择器
   currentSelector = newSelector;
 
-  // 添加到历史
-  selectorHistory.push(currentSelector);
-  selectorHistoryIndex = selectorHistory.length - 1;
+  const newSelectedElements = queryElements(newSelector);
 
-  // 检查是否使用自定义选择器
-  let newSelectedElements;
-  if (newSelector.includes(':contains(')) {
-    // 使用自定义查询方法
-    newSelectedElements = document.querySelectorForAll(newSelector);
-  } else {
-    // 使用标准查询方法
-    newSelectedElements = document.querySelectorAll(newSelector);
-  }
-
-  // 重置选中元素
-  selectedElements = [];
-
-  // 高亮并收集所有相似元素的文本
-  newSelectedElements.forEach(el => {
-    el.style.outline = '2px solid blue';
-    selectedElements.push(el);
+  // 累加新结果；只有明确要求时才替换现有选择。
+  const mergedSelection = clearCurrent ? [] : [...selectedElements];
+  const newSelectionArray = Array.from(newSelectedElements);
+  newSelectionArray.forEach(el => {
+    if (!mergedSelection.includes(el)) {
+      markElementSelected(el);
+      mergedSelection.push(el);
+    }
   });
+  selectedElements = mergedSelection;
 
   // 尝试自动检测是否有单一链接元素
-  let hasAutoDetectedLinks = false;
-  if (!isViewingChildren && selectedElements.length > 0) {
+  if (!isViewingChildren && newSelectionArray.length > 0) {
     // 检查第一个元素是否只有一个链接子元素
-    const firstElement = selectedElements[0];
+    const firstElement = newSelectionArray[0];
     const linkElements = firstElement.querySelectorAll('a');
 
     if (linkElements.length === 1) {
-      const linkSelector = generateSelectorForSpecificElement(linkElements[0]);
-
       // 检查这个选择器是否能在所有选中元素中找到相似结构
       let allHaveSimilarLink = true;
 
-      for (let i = 1; i < selectedElements.length; i++) {
-        const links = selectedElements[i].querySelectorAll('a');
+      for (let i = 1; i < newSelectionArray.length; i++) {
+        const links = newSelectionArray[i].querySelectorAll('a');
         if (links.length !== 1) {
           allHaveSimilarLink = false;
           break;
@@ -1741,7 +2487,6 @@ function updateSelection(newSelector, clearCurrent = false) {
 
       if (allHaveSimilarLink) {
         showAutoDetectLink();
-        hasAutoDetectedLinks = true;
       }
     }
   }
@@ -1750,7 +2495,7 @@ function updateSelection(newSelector, clearCurrent = false) {
   updateClipboard();
 
   // 更新通知 (统一调用 updateNotification)
-  updateNotification(newSelectedElements.length); // <--- 修改点 (原先这里有 if/else 判断)
+  updateNotification(selectedElements.length);
 }
 
 // 显示自动检测到链接的提示
@@ -1798,6 +2543,495 @@ function showAutoDetectLink() {
 // UI核心系统 - 管理通知和交互界面
 // 集中管理所有UI元素的创建、更新和交互
 // =============================================
+function getSelectionUIDetent() {
+  if (isDetailsPanelOpen) return 'details';
+  return isActionBarCompact ? 'compact' : 'actions';
+}
+
+function getFloatingBoxViewportBounds(rect) {
+  const documentElement = document.documentElement;
+  const scrollbarWidth = Math.max(0, window.innerWidth - (documentElement?.clientWidth || window.innerWidth));
+  const scrollbarHeight = Math.max(0, window.innerHeight - (documentElement?.clientHeight || window.innerHeight));
+  const rightGap = FLOATING_BOX_EDGE_GAP + Math.max(FLOATING_BOX_SCROLLBAR_SAFE_GAP, scrollbarWidth);
+  const bottomGap = FLOATING_BOX_EDGE_GAP + Math.max(FLOATING_BOX_SCROLLBAR_SAFE_GAP, scrollbarHeight);
+  return {
+    minLeft: FLOATING_BOX_EDGE_GAP,
+    minTop: FLOATING_BOX_EDGE_GAP,
+    maxLeft: Math.max(window.innerWidth - rect.width - rightGap, FLOATING_BOX_EDGE_GAP),
+    maxTop: Math.max(window.innerHeight - rect.height - bottomGap, FLOATING_BOX_EDGE_GAP)
+  };
+}
+
+function applyFloatingBoxPosition(shell) {
+  if (!floatingBoxCenter) return;
+  const rect = shell.getBoundingClientRect();
+  const { minLeft, minTop, maxLeft, maxTop } = getFloatingBoxViewportBounds(rect);
+  let left = Math.min(Math.max(floatingBoxCenter.x - rect.width / 2, minLeft), maxLeft);
+  let top = Math.min(Math.max(floatingBoxCenter.y - rect.height / 2, minTop), maxTop);
+
+  if (floatingBoxAnchor === 'left' || floatingBoxAnchor === 'right') {
+    left = floatingBoxAnchor === 'left' ? minLeft : maxLeft;
+    top = Math.min(Math.max(floatingBoxSideTop ?? top, minTop), maxTop);
+    floatingBoxSideTop = top;
+  } else if (floatingBoxAnchor === 'bottom') {
+    top = maxTop;
+  } else {
+    const anchoredBottom = floatingBoxFreeBottom ?? (top + rect.height);
+    top = Math.min(Math.max(anchoredBottom - rect.height, minTop), maxTop);
+    floatingBoxFreeBottom = top + rect.height;
+  }
+
+  shell.style.left = `${left}px`;
+  shell.style.top = `${top}px`;
+  shell.style.right = 'auto';
+  shell.style.bottom = 'auto';
+  shell.style.transform = 'none';
+  floatingBoxCenter = { x: left + rect.width / 2, y: top + rect.height / 2 };
+}
+
+function cacheCurrentDetentSize(shell) {
+  const rect = shell.getBoundingClientRect();
+  detentSizeCache[getSelectionUIDetent()] = { width: rect.width, height: rect.height };
+}
+
+function playPendingShellMorph(shell) {
+  applyFloatingBoxPosition(shell);
+  if (!pendingShellMorphRect) {
+    cacheCurrentDetentSize(shell);
+    isDetailsTransitioning = false;
+    return;
+  }
+
+  const fromRect = pendingShellMorphRect;
+  pendingShellMorphRect = null;
+  const toRect = shell.getBoundingClientRect();
+  const contentNodes = shell.querySelectorAll(':scope > .batch-selector-details, :scope > .batch-selector-action-bar');
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  if (reduceMotion || typeof shell.animate !== 'function') {
+    isDetailsTransitioning = false;
+    return;
+  }
+
+  const animation = shell.animate([
+    {
+      width: `${fromRect.width}px`,
+      height: `${fromRect.height}px`,
+      translate: `${fromRect.left - toRect.left}px ${fromRect.top - toRect.top}px`,
+      borderRadius: '16px'
+    },
+    {
+      width: `${toRect.width}px`,
+      height: `${toRect.height}px`,
+      translate: '0 0',
+      borderRadius: '16px'
+    }
+  ], {
+    duration: 320,
+    easing: 'cubic-bezier(0.32, 0.72, 0, 1)',
+    fill: 'both'
+  });
+  contentNodes.forEach(node => {
+    node.animate([
+      { opacity: 0.18, transform: 'scale(0.985)', filter: 'blur(1px)' },
+      { opacity: 1, transform: 'scale(1)', filter: 'blur(0)' }
+    ], {
+      duration: 260,
+      delay: 35,
+      easing: 'cubic-bezier(0.32, 0.72, 0, 1)',
+      fill: 'both'
+    });
+  });
+  animation.finished.catch(() => {}).finally(() => {
+    animation.cancel();
+    cacheCurrentDetentSize(shell);
+    isDetailsTransitioning = false;
+  });
+}
+
+function transitionSelectionUIDetent(targetDetent, shell = document.querySelector('#batch-selector-notification .batch-selector-shell')) {
+  if (isDetailsTransitioning || targetDetent === getSelectionUIDetent()) return;
+  isDetailsTransitioning = true;
+  if (shell) {
+    const rect = shell.getBoundingClientRect();
+    pendingShellMorphRect = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    if (!floatingBoxCenter) floatingBoxCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  }
+
+  if (targetDetent === 'actions' || targetDetent === 'compact') {
+    preferredCollapsedDetent = targetDetent;
+  }
+  isDetailsPanelOpen = targetDetent === 'details';
+  isActionBarCompact = targetDetent === 'compact';
+  if (!isDetailsPanelOpen && isViewingChildren) isViewingChildren = false;
+  persistSelectionUIState();
+  updateNotification(selectedElements.length);
+}
+
+function toggleSelectionUIDetentFromHandle(shell) {
+  transitionSelectionUIDetent(
+    getHandleTargetDetent(getSelectionUIDetent(), preferredCollapsedDetent),
+    shell
+  );
+}
+
+function toggleCollapsedSelectionUIDetent(shell) {
+  transitionSelectionUIDetent(getSummaryTargetDetent(getSelectionUIDetent()), shell);
+}
+
+function getNearestFloatingAnchor(rect) {
+  return getNearestViewportAnchor(rect, window.innerWidth, window.innerHeight);
+}
+
+function snapFloatingBox(shell, movedRect) {
+  floatingBoxAnchor = getNearestFloatingAnchor(movedRect) || 'free';
+  floatingBoxCenter = { x: movedRect.left + movedRect.width / 2, y: movedRect.top + movedRect.height / 2 };
+  floatingBoxSideTop = floatingBoxAnchor === 'left' || floatingBoxAnchor === 'right' ? movedRect.top : null;
+  floatingBoxFreeBottom = floatingBoxAnchor === 'free' ? movedRect.bottom : null;
+  shell.style.removeProperty('translate');
+  applyFloatingBoxPosition(shell);
+  persistFloatingBoxPosition();
+  const snappedRect = shell.getBoundingClientRect();
+  if (typeof shell.animate !== 'function' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  shell.animate([
+    { translate: `${movedRect.left - snappedRect.left}px ${movedRect.top - snappedRect.top}px` },
+    { translate: '0 0' }
+  ], {
+    duration: 280,
+    easing: 'cubic-bezier(0.32, 0.72, 0, 1)'
+  });
+}
+
+function bindFloatingSheetMove(notification, shell) {
+  const moveSurface = notification.querySelector('.batch-selector-move-surface');
+  if (!moveSurface) return;
+
+  let pointerId = null;
+  let startX = 0;
+  let startY = 0;
+  let deltaX = 0;
+  let deltaY = 0;
+  let moved = false;
+  let frameId = null;
+  let baseRect = null;
+
+  const renderDrag = () => {
+    frameId = null;
+    if (!baseRect) return;
+    const { minLeft, minTop, maxLeft, maxTop } = getFloatingBoxViewportBounds(baseRect);
+    const targetLeft = Math.min(Math.max(baseRect.left + deltaX, minLeft), maxLeft);
+    const targetTop = Math.min(Math.max(baseRect.top + deltaY, minTop), maxTop);
+    shell.style.translate = `${targetLeft - baseRect.left}px ${targetTop - baseRect.top}px`;
+  };
+
+  const finish = event => {
+    if (pointerId === null || event.pointerId !== pointerId) return;
+    if (moveSurface.hasPointerCapture(pointerId)) moveSurface.releasePointerCapture(pointerId);
+    pointerId = null;
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    renderDrag();
+
+    if (moved && event.type !== 'pointercancel') {
+      const movedRect = shell.getBoundingClientRect();
+      snapFloatingBox(shell, movedRect);
+    } else {
+      shell.style.removeProperty('translate');
+    }
+    shell.classList.remove('batch-selector-shell-dragging');
+
+  };
+
+  moveSurface.addEventListener('pointerdown', event => {
+    if (event.target.closest('#batch-selector-sheet-grabber')) return;
+    if (event.button !== 0 || isDetailsTransitioning) return;
+    event.preventDefault();
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    deltaX = 0;
+    deltaY = 0;
+    moved = false;
+    baseRect = shell.getBoundingClientRect();
+    shell.classList.add('batch-selector-shell-dragging');
+    moveSurface.setPointerCapture(pointerId);
+  });
+  moveSurface.addEventListener('pointermove', event => {
+    if (pointerId === null || event.pointerId !== pointerId) return;
+    event.preventDefault();
+    deltaX = event.clientX - startX;
+    deltaY = event.clientY - startY;
+    if (Math.hypot(deltaX, deltaY) > 5) moved = true;
+    if (frameId === null) frameId = requestAnimationFrame(renderDrag);
+  });
+  moveSurface.addEventListener('pointerup', finish);
+  moveSurface.addEventListener('pointercancel', finish);
+}
+
+function getDetentTargetSize(detent) {
+  if (detentSizeCache[detent]) return detentSizeCache[detent];
+  if (detent === 'compact') return { width: 104, height: 42 };
+  if (detent === 'actions') return { width: Math.min(360, window.innerWidth - 16), height: 65 };
+  return { width: Math.min(360, window.innerWidth - 16), height: Math.min(520, window.innerHeight - 16) };
+}
+
+function bindCompactHoverPosition(shell) {
+  if (!shell.classList.contains('batch-selector-shell-compact') || typeof ResizeObserver !== 'function') return;
+
+  let previousHeight = shell.getBoundingClientRect().height;
+  let pendingTransitionPositionTimeoutId = null;
+  const observer = new ResizeObserver(entries => {
+    if (!shell.isConnected) {
+      if (pendingTransitionPositionTimeoutId !== null) clearTimeout(pendingTransitionPositionTimeoutId);
+      observer.disconnect();
+      return;
+    }
+    const nextHeight = entries[0]?.contentRect?.height ?? shell.getBoundingClientRect().height;
+    if (Math.abs(nextHeight - previousHeight) < 0.25) return;
+    previousHeight = nextHeight;
+    if (!floatingBoxCenter || shell.classList.contains('batch-selector-sheet-pulling')) return;
+    if (isDetailsTransitioning) {
+      if (pendingTransitionPositionTimeoutId !== null) clearTimeout(pendingTransitionPositionTimeoutId);
+      pendingTransitionPositionTimeoutId = setTimeout(() => {
+        pendingTransitionPositionTimeoutId = null;
+        if (shell.isConnected && shell.matches(':hover')) applyFloatingBoxPosition(shell);
+      }, 340);
+      return;
+    }
+    applyFloatingBoxPosition(shell);
+  });
+  observer.observe(shell);
+}
+
+function bindDetentPullHandle(notification, shell) {
+  const grabber = notification.querySelector('#batch-selector-sheet-grabber');
+  if (!grabber) return;
+
+  const detents = ['compact', 'actions', 'details'];
+  let pointerId = null;
+  let startX = 0;
+  let startY = 0;
+  let deltaX = 0;
+  let deltaY = 0;
+  let baseRect = null;
+  let targetDetent = null;
+  let progress = 0;
+  let frameId = null;
+  let renderedWidth = 0;
+  let renderedHeight = 0;
+  let renderedTranslate = '0 0';
+  const pullContents = shell.querySelectorAll(':scope > .batch-selector-details, :scope > .batch-selector-action-bar');
+
+  const pullDistance = 180;
+  const commitDistance = 68;
+  const expansionDistance = () => -deltaY;
+
+  const clearPullStyles = () => {
+    shell.style.removeProperty('width');
+    shell.style.removeProperty('height');
+    shell.style.removeProperty('translate');
+    shell.style.removeProperty('opacity');
+    shell.classList.remove('batch-selector-sheet-pulling');
+    pullContents.forEach(node => {
+      node.style.removeProperty('opacity');
+      node.style.removeProperty('transform');
+      node.style.removeProperty('filter');
+    });
+  };
+
+  const renderPull = () => {
+    frameId = null;
+    if (!baseRect) return;
+    const distance = expansionDistance();
+    const currentIndex = detents.indexOf(getSelectionUIDetent());
+    const direction = distance >= 0 ? 1 : -1;
+    const targetIndex = currentIndex + direction;
+
+    if (targetIndex < 0 || targetIndex >= detents.length) {
+      targetDetent = null;
+      progress = 0;
+      const resistance = distance * 0.12;
+      renderedTranslate = `0 ${-resistance}px`;
+      shell.style.translate = renderedTranslate;
+      return;
+    }
+
+    targetDetent = detents[targetIndex];
+    progress = Math.min(Math.abs(distance) / pullDistance, 1);
+    const eased = progress * progress * (3 - 2 * progress);
+    const targetSize = getDetentTargetSize(targetDetent);
+    renderedWidth = baseRect.width + (targetSize.width - baseRect.width) * eased;
+    renderedHeight = baseRect.height + (targetSize.height - baseRect.height) * eased;
+    let translateX = (baseRect.width - renderedWidth) / 2;
+    let translateY = (baseRect.height - renderedHeight) / 2;
+    if (floatingBoxAnchor === 'left') translateX = 0;
+    if (floatingBoxAnchor === 'right') translateX = baseRect.width - renderedWidth;
+    if (floatingBoxAnchor === 'left' || floatingBoxAnchor === 'right') translateY = 0;
+    else translateY = baseRect.height - renderedHeight;
+    renderedTranslate = `${translateX}px ${translateY}px`;
+    shell.style.width = `${renderedWidth}px`;
+    shell.style.height = `${renderedHeight}px`;
+    shell.style.translate = renderedTranslate;
+    pullContents.forEach(node => {
+      node.style.opacity = String(1 - eased * 0.64);
+      node.style.transform = `scale(${1 - eased * 0.012})`;
+      node.style.filter = `blur(${eased * 0.7}px)`;
+    });
+  };
+
+  const snapBack = () => {
+    if (typeof shell.animate !== 'function' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      clearPullStyles();
+      return;
+    }
+    const animation = shell.animate([
+      { width: `${renderedWidth || baseRect.width}px`, height: `${renderedHeight || baseRect.height}px`, translate: renderedTranslate },
+      { width: `${baseRect.width}px`, height: `${baseRect.height}px`, translate: '0 0' }
+    ], { duration: 260, easing: 'cubic-bezier(0.32, 0.72, 0, 1)' });
+    pullContents.forEach(node => {
+      node.animate([
+        { opacity: node.style.opacity || 1, transform: node.style.transform || 'scale(1)', filter: node.style.filter || 'blur(0)' },
+        { opacity: 1, transform: 'scale(1)', filter: 'blur(0)' }
+      ], { duration: 220, easing: 'cubic-bezier(0.32, 0.72, 0, 1)' });
+    });
+    animation.finished.catch(() => {}).finally(clearPullStyles);
+  };
+
+  const finish = event => {
+    if (pointerId === null || event.pointerId !== pointerId) return;
+    if (grabber.hasPointerCapture(pointerId)) grabber.releasePointerCapture(pointerId);
+    pointerId = null;
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    renderPull();
+    const moved = Math.hypot(deltaX, deltaY) > 5;
+
+    if (event.type === 'pointercancel') {
+      snapBack();
+    } else if (!moved) {
+      clearPullStyles();
+      toggleSelectionUIDetentFromHandle(shell);
+    } else if (targetDetent && Math.abs(expansionDistance()) >= commitDistance) {
+      transitionSelectionUIDetent(targetDetent, shell);
+    } else {
+      snapBack();
+    }
+  };
+
+  grabber.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || isDetailsTransitioning) return;
+    event.preventDefault();
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    deltaX = 0;
+    deltaY = 0;
+    targetDetent = null;
+    progress = 0;
+    baseRect = shell.getBoundingClientRect();
+    renderedWidth = baseRect.width;
+    renderedHeight = baseRect.height;
+    renderedTranslate = '0 0';
+    shell.classList.add('batch-selector-sheet-pulling');
+    grabber.setPointerCapture(pointerId);
+  });
+  grabber.addEventListener('pointermove', event => {
+    if (pointerId === null || event.pointerId !== pointerId) return;
+    event.preventDefault();
+    deltaX = event.clientX - startX;
+    deltaY = event.clientY - startY;
+    if (frameId === null) frameId = requestAnimationFrame(renderPull);
+  });
+  grabber.addEventListener('pointerup', finish);
+  grabber.addEventListener('pointercancel', finish);
+  grabber.addEventListener('click', event => {
+    if (event.detail === 0) toggleSelectionUIDetentFromHandle(shell);
+  });
+}
+
+const detailsDisclosureTokens = new WeakMap();
+const detailsDisclosureBaseOverflow = new WeakMap();
+
+function animateDetailsDisclosure(content, opening, isStillOpen, notification) {
+  if (!detailsDisclosureBaseOverflow.has(content)) {
+    detailsDisclosureBaseOverflow.set(content, content.style.overflow);
+  }
+
+  const currentHeight = content.getBoundingClientRect().height;
+  content.getAnimations?.().forEach(animation => animation.cancel());
+  const token = {};
+  detailsDisclosureTokens.set(content, token);
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  if (reduceMotion || typeof content.animate !== 'function') {
+    content.style.display = opening ? 'block' : 'none';
+    fitSelectionDetailsWithinViewport(notification, false);
+    return;
+  }
+
+  if (opening) content.style.display = 'block';
+  const expandedHeight = content.scrollHeight;
+  const expandedMarginTop = Number.parseFloat(getComputedStyle(content).marginTop) || 0;
+  const startHeight = opening ? Math.min(currentHeight, expandedHeight) : currentHeight;
+  const endHeight = opening ? expandedHeight : 0;
+  content.style.overflow = 'hidden';
+  const animation = content.animate([
+    {
+      height: `${startHeight}px`,
+      marginTop: `${opening ? 0 : expandedMarginTop}px`,
+      opacity: opening ? 0.72 : 1
+    },
+    {
+      height: `${endHeight}px`,
+      marginTop: `${opening ? expandedMarginTop : 0}px`,
+      opacity: opening ? 1 : 0.72
+    }
+  ], {
+    duration: 160,
+    fill: 'both',
+    easing: 'cubic-bezier(0.32, 0.72, 0, 1)'
+  });
+
+  let positionFrameId = null;
+  const keepPositionAnchored = () => {
+    if (detailsDisclosureTokens.get(content) !== token || !content.isConnected) return;
+    const shell = notification.querySelector('.batch-selector-shell-open');
+    if (shell) applyFloatingBoxPosition(shell);
+    positionFrameId = requestAnimationFrame(keepPositionAnchored);
+  };
+  positionFrameId = requestAnimationFrame(keepPositionAnchored);
+
+  animation.finished.catch(() => {}).finally(() => {
+    if (detailsDisclosureTokens.get(content) !== token) return;
+    if (positionFrameId !== null) cancelAnimationFrame(positionFrameId);
+    animation.cancel();
+    content.style.removeProperty('height');
+    content.style.removeProperty('opacity');
+    content.style.overflow = detailsDisclosureBaseOverflow.get(content) || '';
+    content.style.display = isStillOpen() ? 'block' : 'none';
+    fitSelectionDetailsWithinViewport(notification, false);
+  });
+}
+
+function fitSelectionDetailsWithinViewport(notification, animatePosition = true) {
+  const shell = notification.querySelector('.batch-selector-shell-open');
+  const details = notification.querySelector('.batch-selector-details');
+  if (!shell || !details) return;
+
+  const beforeRect = shell.getBoundingClientRect();
+  const moveHeight = notification.querySelector('.batch-selector-move-surface')?.getBoundingClientRect().height || 0;
+  const actionHeight = notification.querySelector('.batch-selector-action-bar')?.getBoundingClientRect().height || 0;
+  details.style.maxHeight = `${Math.max(150, window.innerHeight - moveHeight - actionHeight - 20)}px`;
+
+  requestAnimationFrame(() => {
+    applyFloatingBoxPosition(shell);
+    const afterRect = shell.getBoundingClientRect();
+    if (animatePosition && typeof shell.animate === 'function' && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      shell.animate([
+        { translate: `${beforeRect.left - afterRect.left}px ${beforeRect.top - afterRect.top}px` },
+        { translate: '0 0' }
+      ], { duration: 200, easing: 'cubic-bezier(0.32, 0.72, 0, 1)' });
+    }
+    cacheCurrentDetentSize(shell);
+  });
+}
+
 // 更新通知内容 (合并后的核心函数)
 function updateNotification(count) {
   // 移除可能已存在的通知
@@ -1826,13 +3060,11 @@ function updateNotification(count) {
     return;
   }
 
+  count = selectedElements.length;
+
   // 如果当前元素类型的元素已经不存在，更新当前元素类型
   if (currentElementTypeKey) {
-    const [tagName, className] = currentElementTypeKey.split('.');
-    const typeElements = selectedElements.filter(el =>
-      el.tagName.toLowerCase() === tagName &&
-      (el.className || '') === className
-    );
+    const typeElements = selectedElements.filter(el => matchesElementType(el, currentElementTypeKey));
 
     // 如果当前类型的元素已经不存在，使用第一个选中元素的类型
     if (typeElements.length === 0) {
@@ -1840,7 +3072,7 @@ function updateNotification(count) {
       delete matchedLevelIndices[currentElementTypeKey];
 
       const firstElement = selectedElements[0];
-      currentElementTypeKey = `${firstElement.tagName.toLowerCase()}.${firstElement.className || ''}`;
+      currentElementTypeKey = getElementTypeKey(firstElement);
 
       // 更新父元素链
       collectParentChain(firstElement);
@@ -1862,7 +3094,7 @@ function updateNotification(count) {
   } else if (selectedElements.length > 0) {
     // 如果没有当前元素类型但有选中元素，使用第一个选中元素的类型
     const firstElement = selectedElements[0];
-    currentElementTypeKey = `${firstElement.tagName.toLowerCase()}.${firstElement.className || ''}`;
+    currentElementTypeKey = getElementTypeKey(firstElement);
 
     // 更新父元素链
     collectParentChain(firstElement);
@@ -1871,87 +3103,94 @@ function updateNotification(count) {
   // 创建新通知
   const notification = document.createElement('div');
   notification.id = 'batch-selector-notification';
-  notification.className = 'batch-selector-ui';
+  notification.className = 'batch-selector-ui batch-selector-layer';
 
-  // 设置通知样式
-  if (isUIMinimized) {
-    // =============================
-    // 最小化状态 UI 渲染
-    // =============================
-    notification.style.position = 'fixed';
-    notification.style.top = '20px';
-    notification.style.left = '20px';
-    notification.style.padding = '10px 12px';
-    notification.style.backgroundColor = 'rgba(0, 0, 0, 0.85)';
-    notification.style.color = 'white';
-    notification.style.borderRadius = '5px';
-    notification.style.zIndex = '10000';
-    notification.style.width = 'auto';
-    notification.style.height = 'auto';
-    notification.style.display = 'flex';
-    notification.style.alignItems = 'center';
-    notification.style.justifyContent = 'center';
-    notification.style.cursor = 'pointer';
-    notification.style.boxShadow = '0 2px 10px rgba(0,0,0,0.3)';
-    notification.style.fontFamily = 'system-ui, -apple-system, sans-serif';
-
-    notification.innerHTML = `
-      <div title="${t('ui_selected_count', count)} (${t('ui_click_to_expand')})" style="display: flex; align-items: center; gap: 8px;">
-        <div style="font-size: 12px;">${t('ui_selected_elements')}</div>
-        <div style="font-weight: bold; font-size: 15px;">${count}</div>
-        <div style="margin-left: 5px; opacity: 0.7; font-size: 12px;">▼</div>
+  const similarShortcut = escapeHtml(typeSelectKeyConfig.keys.map(formatKeyForDisplay).join('+'));
+  const copyShortcut = escapeHtml(copyKeyConfig.keys.map(formatKeyForDisplay).join('+'));
+  const sheetHandleHTML = `
+    <div class="batch-selector-move-surface batch-selector-ui" title="${t('ui_move_box')}">
+      <button id="batch-selector-sheet-grabber" class="batch-selector-sheet-grabber batch-selector-ui" type="button" aria-label="${t('ui_drag_to_close')}" title="${t('ui_drag_to_close')}"></button>
+    </div>
+  `;
+  const actionBarHTML = isActionBarCompact
+    ? `
+      <div class="batch-selector-action-bar batch-selector-action-bar-compact batch-selector-ui" role="toolbar" aria-label="${t('ui_action_bar_label')}">
+        <button id="batch-selector-action-mode-toggle" class="batch-selector-action-summary batch-selector-ui" title="${t('ui_btn_toggle_compact')}">
+          <span class="batch-selector-action-count">${count}</span>
+          <span>${t('ui_selected_short')}</span>
+        </button>
+      </div>
+    `
+    : `
+      <div class="batch-selector-action-bar batch-selector-ui" role="toolbar" aria-label="${t('ui_action_bar_label')}">
+        <button id="batch-selector-action-mode-toggle" class="batch-selector-action-summary batch-selector-ui" title="${t('ui_btn_toggle_compact')}">
+          <span class="batch-selector-action-count">${count}</span>
+          <span>${t('ui_selected_elements')}</span>
+        </button>
+        <button id="batch-selector-select-similar" class="batch-selector-ui" title="${t('ui_select_similar_hint', similarShortcut)}" ${isViewingChildren ? 'disabled' : ''}>${t('ui_btn_select_similar')}</button>
+        <button id="batch-selector-copy-btn" class="batch-selector-ui batch-selector-primary-action" title="${t('ui_copy_hint', copyShortcut)}">${t('ui_btn_copy')}</button>
+        <button id="batch-selector-details-toggle" class="batch-selector-ui" aria-expanded="${isDetailsPanelOpen}">${isDetailsPanelOpen ? t('ui_btn_hide_details') : t('ui_btn_more')}</button>
+        <button id="batch-selector-cancel" class="batch-selector-ui batch-selector-danger-action" title="${t('ui_btn_clear')}">✕</button>
       </div>
     `;
 
+  // 设置通知样式
+  if (!isDetailsPanelOpen) {
+    // =============================
+    // 第一层：仅显示底部操作条
+    // =============================
+    notification.style.position = 'fixed';
+    notification.style.inset = '0';
+    notification.style.zIndex = '10000';
+    notification.innerHTML = `<div class="batch-selector-shell${isActionBarCompact ? ' batch-selector-shell-compact' : ''} batch-selector-ui">${sheetHandleHTML}${actionBarHTML}</div>`;
+
     // 添加到文档
     document.body.appendChild(notification);
+    const collapsedShell = notification.querySelector('.batch-selector-shell');
+    if (collapsedShell) {
+      bindFloatingSheetMove(notification, collapsedShell);
+      bindDetentPullHandle(notification, collapsedShell);
+      bindCompactHoverPosition(collapsedShell);
+      playPendingShellMorph(collapsedShell);
+    }
 
-    // === 最小化状态事件监听 ===
-    notification.addEventListener('click', function() {
-      isUIMinimized = false;
-      try {
-        chrome.storage.local.set({'batch-selector-ui-minimized': false});
-        // console.log('UI状态已保存为完整显示');
-      } catch (e) {
-        // console.error('无法保存UI状态:', e);
+    // === 第一层操作条事件监听 ===
+    notification.addEventListener('click', function(event) {
+      if (event.target.closest('#batch-selector-action-mode-toggle')) {
+        toggleCollapsedSelectionUIDetent(event.target.closest('.batch-selector-shell'));
+      } else if (event.target.closest('#batch-selector-select-similar')) {
+        selectAllElements();
+      } else if (event.target.closest('#batch-selector-copy-btn')) {
+        copySelectionToClipboard();
+      } else if (event.target.closest('#batch-selector-details-toggle')) {
+        transitionSelectionUIDetent('details', event.target.closest('.batch-selector-shell'));
+      } else if (event.target.closest('#batch-selector-cancel')) {
+        cancelSelection();
       }
-      updateNotification(count); // 重新渲染为完整状态
     });
-    // 最小化状态下不需要其他监听器
+    // 详情关闭时不绑定第二层控件
 
   } else {
     // =============================
-    // 完整状态 UI 渲染
+    // 第二层详情面板 UI 渲染
     // =============================
     notification.style.position = 'fixed';
-    notification.style.top = '20px';
-    notification.style.left = '20px';
-    notification.style.padding = '10px 15px';
-    notification.style.backgroundColor = 'rgba(0, 0, 0, 0.85)';
-    notification.style.color = 'white';
-    notification.style.borderRadius = '5px';
+    notification.style.inset = '0';
     notification.style.zIndex = '10000';
-    notification.style.maxWidth = '380px';
-    notification.style.maxHeight = '80vh';
-    notification.style.overflowY = 'auto';
-    notification.style.boxShadow = '0 2px 10px rgba(0,0,0,0.3)';
-    notification.style.fontFamily = 'system-ui, -apple-system, sans-serif';
-    notification.style.fontSize = '14px';
 
     // --- 构建通用部分 ---
     let hierarchyHTML = '';
     if (parentChain.length > 0) {
       // (元素层级HTML生成逻辑 - 从原 updateNotification / updateChildrenNotification 提取并统一)
-      hierarchyHTML = '<div style="margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 6px;">';
-      hierarchyHTML += `
-        <div style="margin-bottom: 6px; font-size: 0.9em; display: flex; justify-content: space-between; align-items: center;">
-          <span>${t('ui_hierarchy')}:</span>
-          <span id="hierarchy-toggle" class="batch-selector-ui" style="cursor: pointer; font-size: 0.8em; color: #aaa; user-select: none;">
-            ${isHierarchyExpanded ? t('ui_collapse') : t('ui_expand')}
-          </span>
-        </div>
-      `; // 注意这里是反引号 `
-      hierarchyHTML += '<div style="display: flex; flex-direction: column; gap: 2px;">';
+      hierarchyHTML = `
+        <div class="treeclip-ios-disclosure-section">
+          <div id="hierarchy-section-header" class="treeclip-ios-section-header batch-selector-ui" role="button" aria-expanded="${isHierarchySectionOpen}">
+            <span style="font-size: 0.9em;">${t('ui_hierarchy')}</span>
+            <span class="toggle-arrow" aria-hidden="true" style="transform: rotate(${isHierarchySectionOpen ? '90deg' : '0deg'});">›</span>
+          </div>
+          <div id="hierarchy-section-content" style="display: ${isHierarchySectionOpen ? 'block' : 'none'}; max-width: 100%; margin-top: 8px; overflow: hidden;">
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+      `;
       const MAX_LEVELS_TO_SHOW = 5;
       const needCollapse = !isHierarchyExpanded && parentChain.length > MAX_LEVELS_TO_SHOW;
       let elementsToShow = [];
@@ -1970,7 +3209,7 @@ function updateNotification(count) {
           hierarchyHTML += `
             <div style="margin: 8px 0; text-align: center; position: relative;">
               <div style="position: absolute; height: 100%; left: 18px; top: 0; border-left: 1px dashed rgba(180, 180, 180, 0.4); z-index: 0;"></div>
-              <div id="show-more-levels" class="batch-selector-ui" style="display: inline-flex; align-items: center; justify-content: center; padding: 4px 14px; background-color: rgba(255, 255, 255, 0.08); border-radius: 15px; font-size: 0.85em; cursor: pointer; color: #bbb; border: 1px dashed rgba(180, 180, 180, 0.4); gap: 8px; position: relative; margin-left: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); transition: all 0.2s ease; z-index: 1;">
+              <div id="toggle-middle-levels" class="batch-selector-ui" role="button" aria-expanded="false" style="display: inline-flex; align-items: center; justify-content: center; padding: 4px 14px; background-color: rgba(255, 255, 255, 0.08); border-radius: 15px; font-size: 0.85em; cursor: pointer; color: #bbb; border: 1px dashed rgba(180, 180, 180, 0.4); gap: 8px; position: relative; margin-left: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); transition: all 0.2s ease; z-index: 1;">
                 <span style="font-size: 1.5em; line-height: 1em;">⋮</span>
                 <span>${t('ui_omit_levels', collapsedCount)}</span>
                 <span style="font-size: 0.9em; opacity: 0.7; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 8px;">${t('ui_click_to_expand')}</span>
@@ -1983,17 +3222,18 @@ function updateNotification(count) {
         const tag = el.tagName.toLowerCase();
         let desc = tag;
         if (el.id) { desc += `#${el.id}`; }
-        else if (el.className) { const mainClass = el.className.split(' ')[0]; if (mainClass) { desc += `.${mainClass}`; } }
+        else { const mainClass = getElementClassName(el).split(' ')[0]; if (mainClass) { desc += `.${mainClass}`; } }
         const { level, indent } = getAdjustedLevelIndent(j, i, needCollapse, parentChain);
+        const visualIndent = Math.min(indent, 92);
         const isCurrentLevel = i === parentChainIndex;
         const isMatchedLevel = matchedLevelIndices[currentElementTypeKey] === i;
         hierarchyHTML += `
           <div style="margin-bottom: 3px;">
-            <div style="display: flex; align-items: center;">
-              <div style="width: ${indent}px; flex-shrink: 0;"></div>
+            <div style="display: flex; max-width: 100%; min-width: 0; align-items: center;">
+              <div style="width: ${visualIndent}px; flex-shrink: 0;"></div>
               ${level > 0 ? '<span style="margin-right: 5px; color: rgba(180, 180, 180, 0.6); font-size: 0.85em;">└─</span>' : ''}
-              <span class="level-selector batch-selector-ui" data-level="${i}" data-current="${isCurrentLevel}" data-matched="${isMatchedLevel}" style="display: inline-flex; align-items: center; padding: 3px 8px; background-color: ${isCurrentLevel ? 'rgba(66, 133, 244, 0.8)' : isMatchedLevel ? 'rgba(247, 152, 29, 0.8)' : 'rgba(255, 255, 255, 0.08)'}; border-radius: 4px; font-size: 0.85em; cursor: pointer; ${isCurrentLevel || isMatchedLevel ? 'font-weight: bold;' : ''} transition: all 0.2s ease; box-shadow: ${isCurrentLevel || isMatchedLevel ? '0 1px 3px rgba(0,0,0,0.3)' : '0 1px 2px rgba(0,0,0,0.1)'}; color: ${isCurrentLevel || isMatchedLevel ? 'white' : '#ddd'}; border: 1px solid ${isCurrentLevel ? 'rgba(66, 133, 244, 0.6)' : isMatchedLevel ? 'rgba(247, 152, 29, 0.6)' : 'transparent'};">
-                <span style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${desc}</span>
+              <span class="level-selector batch-selector-ui" data-level="${i}" data-current="${isCurrentLevel}" data-matched="${isMatchedLevel}" style="display: inline-flex; max-width: calc(100% - ${visualIndent + (level > 0 ? 24 : 0)}px); min-width: 0; overflow: hidden; align-items: center; padding: 3px 8px; background-color: ${isCurrentLevel ? 'rgba(66, 133, 244, 0.8)' : isMatchedLevel ? 'rgba(247, 152, 29, 0.8)' : 'rgba(255, 255, 255, 0.08)'}; border-radius: 4px; font-size: 0.85em; cursor: pointer; ${isCurrentLevel || isMatchedLevel ? 'font-weight: bold;' : ''} transition: all 0.2s ease; box-shadow: ${isCurrentLevel || isMatchedLevel ? '0 1px 3px rgba(0,0,0,0.3)' : '0 1px 2px rgba(0,0,0,0.1)'}; color: ${isCurrentLevel || isMatchedLevel ? 'white' : '#ddd'}; border: 1px solid ${isCurrentLevel ? 'rgba(66, 133, 244, 0.6)' : isMatchedLevel ? 'rgba(247, 152, 29, 0.6)' : 'transparent'};">
+                <span style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(desc)}</span>
                 ${isCurrentLevel ? ` <span style="margin-left: 5px; color: #8effb7; font-size: 0.9em; display: inline-flex; align-items: center;"><span style="margin-right: 2px;">✓</span>${t('ui_current')}</span>` : ''}
                 ${isMatchedLevel ? ` <span style="margin-left: 5px; color: #ffcc80; font-size: 0.9em; display: inline-flex; align-items: center;"><span style="margin-right: 2px;">⊙</span>${t('ui_match')}</span>` : ''}
                 ${i === 0 ? ` <span style="margin-left: 5px; color: #ffcc80; font-size: 0.85em; background: rgba(255,150,30,0.15); padding: 1px 4px; border-radius: 3px;">${t('ui_bottom')}</span>` : ''}
@@ -2003,7 +3243,17 @@ function updateNotification(count) {
           </div>
         `; // 注意这里是反引号 `
       }
-      hierarchyHTML += '</div></div>';
+      if (parentChain.length > MAX_LEVELS_TO_SHOW && isHierarchyExpanded) {
+        hierarchyHTML += `
+          <div style="margin-top: 8px; text-align: center;">
+            <div id="toggle-middle-levels" class="batch-selector-ui" role="button" aria-expanded="true" style="display: inline-flex; align-items: center; justify-content: center; padding: 4px 12px; border-radius: 14px; cursor: pointer; color: #aebbd0; background: rgba(255, 255, 255, 0.06); gap: 7px; font-size: 0.82em;">
+              <span aria-hidden="true">⌃</span>
+              <span>${t('ui_collapse_middle_levels')}</span>
+            </div>
+          </div>
+        `;
+      }
+      hierarchyHTML += '</div></div></div>';
     }
 
     // --- 构建条件部分 ---
@@ -2017,28 +3267,28 @@ function updateNotification(count) {
       let childrenHTML = '';
       if (childrenChain.length > 0) {
         childrenHTML = '<div style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">';
-        childrenHTML += `<div style="margin-bottom: 8px;">${t('ui_internal_elements')} <small>(${t('ui_click_to_select')})</small>:</div>`;
-        childrenHTML += '<div style="display: flex; flex-direction: column;">';
+        childrenHTML += `<div style="margin-bottom: 8px; font-weight: 650;">${t('ui_internal_elements')}</div>`;
+        childrenHTML += '<div class="batch-selector-flow-grid">';
         childrenChain.forEach((el, index) => {
           const tag = el.tagName.toLowerCase();
           let desc = tag;
           if (el.id) { desc += `#${el.id}`; }
-          else if (el.className) { const mainClass = el.className.split(' ')[0]; if (mainClass) { desc += `.${mainClass}`; } }
-          let preview = '';
-          if (el.textContent) { const text = el.textContent.trim(); preview = text.length > 25 ? text.substring(0, 25) + '...' : text; if (preview) { preview = ` - "${preview}"`; } }
+          else { const mainClass = getElementClassName(el).split(' ')[0]; if (mainClass) { desc += `.${mainClass}`; } }
+          const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          const preview = text.length > 48 ? text.substring(0, 48) + '…' : text;
+          const flowWidthClass = preview.length > 34 ? ' batch-selector-flow-wide' : '';
           childrenHTML += `
-            <div style="margin-bottom: 4px;">
-              <span class="child-selector batch-selector-ui" data-index="${index}" style="display: inline-block; padding: 3px 8px; background-color: rgba(255, 255, 255, 0.1); border-radius: 3px; font-size: 0.85em; cursor: pointer;">
-                ${desc}${preview}
-              </span>
-            </div>
+            <button class="child-selector batch-selector-flow-item${flowWidthClass} batch-selector-ui" data-index="${index}">
+              <span class="batch-selector-flow-preview" title="${escapeHtml(text)}">${escapeHtml(preview || t('ui_no_text_preview'))}</span>
+              <code class="batch-selector-hierarchy-chip batch-selector-field-hierarchy" title="${escapeHtml(desc)}">${escapeHtml(desc)}</code>
+            </button>
           `; // 注意这里是反引号 `
         });
         childrenHTML += '</div></div>';
       }
 
       contentHTML = `
-        <div>${t('ui_viewing_internal')}</div>
+        <div style="font-size: 16px; font-weight: 700;">${t('ui_viewing_internal')}</div>
         <div style="font-size: 0.9em; margin: 5px 0; text-align: left; color: #aaa;">${t('ui_internal_desc')}</div>
         ${childrenHTML}
         ${hierarchyHTML}
@@ -2047,8 +3297,7 @@ function updateNotification(count) {
 
       buttonsHTML = `
         <div style="display: flex; gap: 10px; margin-top: 10px;">
-          <button id="batch-selector-back" class="batch-selector-ui" style="padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;">← ${t('ui_btn_back')}</button>
-          <button id="batch-selector-cancel" class="batch-selector-ui" style="padding: 4px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; margin-left: auto; font-size: 0.85em;">${t('ui_btn_cancel')} ✕</button>
+          <button id="batch-selector-back" class="batch-selector-ui">← ${t('ui_btn_back')}</button>
         </div>
       `; // 注意这里是反引号 `
 
@@ -2058,162 +3307,120 @@ function updateNotification(count) {
       // =============================
       let selectorInfo = '';
       if (currentSelector) {
-        selectorInfo = `<div style="font-size: 0.85em; margin: 4px 0; text-align: left;">${t('ui_current_selector')}: <code>${currentSelector}</code></div>`;
+        selectorInfo = `<details style="margin-top: 8px; color: #aebbd0; font-size: 0.82em;"><summary style="cursor: pointer;">${t('ui_current_selector')}</summary><code style="display: block; margin-top: 5px; overflow-wrap: anywhere;">${escapeHtml(currentSelector)}</code></details>`;
       }
 
       let selectedTypesHTML = '';
       if (selectedElements.length > 0) {
         const elementTypes = {};
         selectedElements.forEach(el => {
-          const tagName = el.tagName.toLowerCase(); const className = el.className || ''; const key = `${tagName}.${className}`;
-          if (!elementTypes[key]) { elementTypes[key] = { count: 0, tagName: tagName, className: className, element: el }; }
-        elementTypes[key].count++;
-      });
-      if (Object.keys(elementTypes).length > 0) {
-          selectedTypesHTML = '<div style="margin-top: 6px;">';
-          if (window.clickedElementInfo) {
-            selectedTypesHTML += `<div style="font-size: 0.9em; margin-bottom: 8px;">${t('ui_current_element')}: <code style="background: rgba(255,255,255,0.1); padding: 2px 4px; border-radius: 3px; font-size: 0.9em;">${window.clickedElementInfo.info}</code></div>`;
-          }
-          selectedTypesHTML += `<div style="margin-bottom: 6px; font-size: 0.9em; display: flex; align-items: center; justify-content: space-between;">
-                                  <span>${t('ui_selected')}: <span style="font-weight: bold;">${count}</span></span>
-                                  <button id="batch-selector-copy-btn" class="batch-selector-ui" title="${t('ui_copy_title')}" style="padding: 2px 8px; background-color: rgba(66, 133, 244, 0.7); border: 1px solid rgba(66, 133, 244, 1); color: white; border-radius: 4px; cursor: pointer; font-size: 0.8em; margin-left: 10px;">${t('ui_btn_copy')}</button>
-                               </div>`;
-          for (const key in elementTypes) {
+          const tagName = el.tagName.toLowerCase(); const className = getElementClassName(el); const key = getElementTypeKey(el);
+          if (!elementTypes[key]) { elementTypes[key] = { count: 0, tagName: tagName, className: className }; }
+          elementTypes[key].count++;
+        });
+      const typeKeys = Object.keys(elementTypes);
+      if (typeKeys.length > 0) {
+          selectedTypesHTML = `<div class="treeclip-selected-groups"><div class="treeclip-groups-label">${t('ui_groups_title')}</div><div class="batch-selector-flow-grid">`;
+          for (const key of typeKeys) {
             const typeInfo = elementTypes[key]; let typeName = typeInfo.tagName;
             if (typeInfo.className) { const displayClassName = typeInfo.className.length > 15 ? typeInfo.className.substring(0, 15) + '...' : typeInfo.className; typeName += `.${displayClassName}`; }
-          const isCurrentType = currentElementTypeKey === key;
-          selectedTypesHTML += `
-              <div class="element-type-selector batch-selector-ui" data-type="${key}" style="margin-bottom: 4px; padding: 3px 8px; background-color: ${isCurrentType ? 'rgba(76, 175, 80, 0.5)' : 'rgba(255, 255, 255, 0.1)'}; border-radius: 10px; font-size: 0.85em; cursor: pointer; display: inline-block; margin-right: 4px;">
-              ${typeName} <span style="opacity: 0.7;">(${typeInfo.count})</span>
-            </div>
-            `; // 注意这里是反引号 `
+            const isCurrentType = currentElementTypeKey === key;
+            selectedTypesHTML += `
+              <button class="element-type-selector batch-selector-flow-item batch-selector-ui" data-type="${escapeHtml(key)}" style="border-color: ${isCurrentType ? '#4ade80' : 'rgba(255,255,255,0.14)'}; background: ${isCurrentType ? 'rgba(34,197,94,0.16)' : 'rgba(255,255,255,0.06)'};">
+                <code class="batch-selector-hierarchy-chip batch-selector-group-hierarchy" title="${escapeHtml(typeName)}">${escapeHtml(typeName)}</code>
+                <strong class="batch-selector-group-count" style="color: ${isCurrentType ? '#86efac' : '#cbd5e1'};">${typeInfo.count}</strong>
+              </button>
+            `;
         }
+        selectedTypesHTML += '</div>';
+        selectedTypesHTML += `<div style="margin-top: 6px; color: #93a4bc; font-size: 0.78em;">${t('ui_group_hint')}</div>`;
         selectedTypesHTML += '</div>';
       }
     }
 
     // 定义"输出格式"区块，包含折叠功能和原内容
     const outputFormatHTML = `
-      <div style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 10px;">
-        <div id="output-format-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; margin-bottom: ${isOutputFormatExpanded ? '6px' : '0'};">
+      <div class="treeclip-ios-disclosure-section">
+        <div id="output-format-header" class="treeclip-ios-section-header batch-selector-ui" role="button" aria-expanded="${isOutputFormatExpanded}">
           <span style="font-size: 0.9em;">${t('ui_output_settings')}</span>
-          <span class="toggle-arrow" style="font-size: 0.8em;">${isOutputFormatExpanded ? '▼' : '▶'}</span>
-            </div>
+          <span class="toggle-arrow" aria-hidden="true" style="transform: rotate(${isOutputFormatExpanded ? '90deg' : '0deg'});">›</span>
+        </div>
         <div id="output-format-content" style="display: ${isOutputFormatExpanded ? 'block' : 'none'};">
-          <!-- 修改剪贴板格式布局为单行 -->
-          <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 6px;">
-            <div style="font-size: 0.9em; flex-shrink: 0;">${t('ui_clipboard_sep')}:</div>
-        <div style="display: flex; gap: 6px;">
-                <label style="display: inline-block; padding: 3px 8px; background-color: ${clipboardFormat === 'newline' ? 'rgba(66, 133, 244, 0.8)' : 'rgba(255, 255, 255, 0.1)'}; border-radius: 10px; font-size: 0.8em; cursor: pointer;"><input type="radio" name="clipboardFormat" value="newline" style="display:none;" ${clipboardFormat === 'newline' ? 'checked' : ''}>${t('ui_sep_newline')}</label>
-                <label style="display: inline-block; padding: 3px 8px; background-color: ${clipboardFormat === 'space' ? 'rgba(66, 133, 244, 0.8)' : 'rgba(255, 255, 255, 0.1)'}; border-radius: 10px; font-size: 0.8em; cursor: pointer;"><input type="radio" name="clipboardFormat" value="space" style="display:none;" ${clipboardFormat === 'space' ? 'checked' : ''}>${t('ui_sep_space')}</label>
-                <label style="display: inline-block; padding: 3px 8px; background-color: ${clipboardFormat === 'comma' ? 'rgba(66, 133, 244, 0.8)' : 'rgba(255, 255, 255, 0.1)'}; border-radius: 10px; font-size: 0.8em; cursor: pointer;"><input type="radio" name="clipboardFormat" value="comma" style="display:none;" ${clipboardFormat === 'comma' ? 'checked' : ''}>${t('ui_sep_comma')}</label>
-        </div>
-      </div>
-          <div style="margin-top: 8px; font-size: 0.9em; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">${t('ui_clean_options')}:</div>
-          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 8px; margin-top: 6px;">
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeInternalSpaces" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeInternalSpaces ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_spaces')}</span></label>
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeCodePatterns" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeCodePatterns ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_code')}</span></label>
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeSymbols" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeSymbols ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_symbols')}</span></label>
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeEnglish" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeEnglish ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_english')}</span></label>
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeChinese" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeChinese ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_chinese')}</span></label>
-            <label style="display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeNumbers" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeNumbers ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_numbers')}</span></label>
-          </div>
-          <div style="margin-top: 8px; display: flex; align-items: center; gap: 8px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">
-             <div style="font-size: 0.9em; flex-shrink: 0;">${t('ui_clean_duplicates')}:</div>
-             <label style="display: flex; align-items: center; gap: 4px; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeDuplicates" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeDuplicates ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_clean_duplicates')}</span></label>
-          </div>
-          <!-- 新增：实时复制选项 -->
-          <div style="margin-top: 8px; display: flex; align-items: center; gap: 8px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">
-             <div style="font-size: 0.9em; flex-shrink: 0;">${t('ui_realtime_copy')}:</div>
-             <label style="display: flex; align-items: center; gap: 4px; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="realtimeCopyEnabled" class="batch-selector-ui" ${isRealtimeCopyEnabled ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>${t('ui_realtime_copy_desc')}</span></label>
-          </div>
-        </div>
-      </div>
-    `;
-
-    // 定义"文本搜索"区块，调整收起状态的边距
-    const searchHTML = `
-      <div style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 10px;">
-        <div id="search-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; margin-bottom: ${isSearchExpanded ? '6px' : '0'};">
-          <div style="display: flex; align-items: center;">
-            <span style="font-size: 0.9em;">${t('ui_search_title')}</span>
-            <span id="search-help-icon" class="batch-selector-ui" title="${t('ui_search_help')}" style="
-              margin-left: 5px;
-              display: inline-flex;
-              justify-content: center;
-              align-items: center;
-              width: 14px;
-              height: 14px;
-              border-radius: 50%;
-              background: rgba(255,255,255,0.2);
-              color: white;
-              font-size: 10px;
-              cursor: help;
-              font-weight: bold;
-            ">?</span>
-          </div>
-          <span class="toggle-arrow" style="font-size: 0.8em;">${isSearchExpanded ? '▼' : '▶'}</span>
-      </div>
-        <div id="search-content" style="display: ${isSearchExpanded ? 'block' : 'none'}">
-          <div style="margin-bottom: 6px; font-size: 0.9em; display: flex; justify-content: space-between; align-items: center;">
-             <span id="batch-selector-search-count" style="font-size: 0.9em; color: #ccc;"></span>
-          </div>
-          <div style="display: flex; gap: 5px; align-items: center;">
-            <input type="text" id="batch-selector-search-input" placeholder="${t('ui_search_input_placeholder')}" value="${searchTerm}" style="flex-grow: 1; padding: 4px 6px; border-radius: 3px; border: 1px solid #555; background-color: #333; color: white; font-size: 0.9em;" class="batch-selector-ui">
-            <button id="batch-selector-search-btn" style="padding: 4px 8px; background-color: #4CAF50; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;" class="batch-selector-ui">${t('ui_search_btn')}</button>
-          </div>
-          <div id="batch-selector-search-results-nav" style="margin-top: 5px; display: flex; justify-content: space-between; align-items: center; font-size: 0.85em; color: #ccc; min-height: 20px;">
-            <div>
-              <button id="batch-selector-search-prev" style="padding: 2px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; margin-right: 4px;" class="batch-selector-ui" disabled>${t('ui_search_prev')}</button>
-              <button id="batch-selector-search-next" style="padding: 2px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer;" class="batch-selector-ui" disabled>${t('ui_search_next')}</button>
+          <div class="treeclip-ios-settings-card">
+            <div class="treeclip-ios-settings-label">${t('ui_clipboard_sep')}</div>
+            <div class="treeclip-ios-segmented">
+              <label><input type="radio" name="clipboardFormat" value="newline" ${clipboardFormat === 'newline' ? 'checked' : ''}><span>${t('ui_sep_newline')}</span></label>
+              <label><input type="radio" name="clipboardFormat" value="space" ${clipboardFormat === 'space' ? 'checked' : ''}><span>${t('ui_sep_space')}</span></label>
+              <label><input type="radio" name="clipboardFormat" value="comma" ${clipboardFormat === 'comma' ? 'checked' : ''}><span>${t('ui_sep_comma')}</span></label>
             </div>
-            <button id="batch-selector-search-add-all" style="padding: 2px 6px; background-color: #2196F3; border: none; color: white; border-radius: 3px; cursor: pointer;" class="batch-selector-ui" disabled>${t('ui_search_add_all')}</button>
+            <div class="treeclip-ios-settings-label">${t('ui_clean_options')}</div>
+            <div class="treeclip-ios-clean-grid">
+              <label><input type="checkbox" id="removeInternalSpaces" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeInternalSpaces ? 'checked' : ''}><span class="treeclip-ios-clean-chip">${t('ui_clean_spaces')}</span></label>
+              <label><input type="checkbox" id="removeCodePatterns" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeCodePatterns ? 'checked' : ''}><span class="treeclip-ios-clean-chip">${t('ui_clean_code')}</span></label>
+              <label><input type="checkbox" id="removeSymbols" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeSymbols ? 'checked' : ''}><span class="treeclip-ios-clean-chip">${t('ui_clean_symbols')}</span></label>
+              <label><input type="checkbox" id="removeEnglish" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeEnglish ? 'checked' : ''}><span class="treeclip-ios-clean-chip">${t('ui_clean_english')}</span></label>
+              <label><input type="checkbox" id="removeChinese" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeChinese ? 'checked' : ''}><span class="treeclip-ios-clean-chip">${t('ui_clean_chinese')}</span></label>
+              <label><input type="checkbox" id="removeNumbers" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeNumbers ? 'checked' : ''}><span class="treeclip-ios-clean-chip">${t('ui_clean_numbers')}</span></label>
+            </div>
           </div>
-          <div style="margin-top: 5px; display: none;">
-            <button id="batch-selector-search-add-all-original" style="width: 100%; padding: 4px 8px; background-color: #2196F3; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;" class="batch-selector-ui" disabled>${t('ui_search_add_all')}</button>
+          <div class="treeclip-ios-settings-card treeclip-ios-behavior-card">
+            <div class="treeclip-ios-settings-label">${t('ui_copy_behavior')}</div>
+            <label class="treeclip-ios-setting-row"><span>${t('ui_clean_duplicates')}</span><input type="checkbox" id="removeDuplicates" class="batch-selector-ui batch-selector-cleanup-checkbox treeclip-ios-switch-input" ${removeDuplicates ? 'checked' : ''}><span class="treeclip-ios-switch" aria-hidden="true"></span></label>
+            <label class="treeclip-ios-setting-row">
+              <span class="treeclip-ios-setting-copy"><span>${t('ui_realtime_copy')}</span><small>${t('ui_realtime_copy_desc')}</small></span>
+              <input type="checkbox" id="realtimeCopyEnabled" class="batch-selector-ui treeclip-ios-switch-input" ${isRealtimeCopyEnabled ? 'checked' : ''}>
+              <span class="treeclip-ios-switch" aria-hidden="true"></span>
+            </label>
           </div>
         </div>
       </div>
     `;
 
-      // 移除 guideButtonHTML 的旧定义，因为它是固定的，可以在后面直接使用
-      // const guideButtonHTML = ...
-
-      // 更新 contentHTML，使用新的 outputFormatHTML 和 searchHTML
+      // 详情面板承载选择分组、文本边界和输出设置。
       contentHTML = `
-      ${selectorInfo}
-      ${selectedTypesHTML}
-      ${hierarchyHTML}
-      ${searchHTML}
-      ${outputFormatHTML}
+        <div>
+          <div class="treeclip-details-title">${t('ui_details_title')}</div>
+        </div>
+        ${selectedTypesHTML}
+        ${selectorInfo}
+        ${hierarchyHTML}
+        ${outputFormatHTML}
       `; // 注意这里是反引号 `
 
-      // 更新 buttonsHTML，添加分隔符和条件样式
+      // 详情面板底部只保留低频工具。
       const hasChildren = childrenChain && childrenChain.length > 0;
       const insideButtonStyle = hasChildren
-          ? 'padding: 4px 8px; background-color: #4CAF50; border: 1px solid #66BB6A; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em; box-shadow: 0 0 5px rgba(76, 175, 80, 0.7);'
-          : 'padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;';
+          ? 'border-color: rgba(74, 222, 128, 0.5); color: #dcfce7; background: rgba(34, 197, 94, 0.14);'
+          : 'opacity: 0.45; cursor: not-allowed;';
       buttonsHTML = `
       <div style="display: flex; gap: 8px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 10px;">
-        <button id="batch-selector-inside" class="batch-selector-ui" style="${insideButtonStyle}">${t('ui_btn_internal')}</button>
-        <button id="batch-selector-guide" class="batch-selector-ui" style="padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;">${t('ui_btn_guide')}</button>
-        <button id="batch-selector-key-config-btn" class="batch-selector-ui" style="padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;">${t('ui_btn_shortcuts')}</button>
-        <button id="batch-selector-cancel" class="batch-selector-ui" style="padding: 4px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; margin-left: auto; font-size: 0.85em;">${t('ui_btn_cancel')} ✕</button>
+        <button id="batch-selector-inside" class="batch-selector-ui" style="${insideButtonStyle}" ${hasChildren ? '' : 'disabled'}>${t('ui_btn_internal')}</button>
+        <button id="batch-selector-key-config-btn" class="batch-selector-ui">${t('ui_btn_shortcuts')}</button>
       </div>
       `;
     }
 
     // --- 组装完整UI ---
     notification.innerHTML = `
-      <div style="position: relative;">
-        <button id="batch-selector-minimize" class="batch-selector-ui" style="position: absolute; top: 0; right: 0; padding: 2px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.8em;">${t('ui_btn_minimize')} ◢</button>
-        ${contentHTML}
-      ${buttonsHTML}
+      <div class="batch-selector-shell batch-selector-shell-open batch-selector-ui">
+        ${sheetHandleHTML}
+        <aside class="batch-selector-details batch-selector-ui" aria-label="${t('ui_details_title')}">
+          ${contentHTML}
+          ${buttonsHTML}
+        </aside>
+        ${actionBarHTML}
       </div>
     `; // 注意这里是反引号 `
 
   // 添加到文档
   document.body.appendChild(notification);
+
+    const detailsShell = notification.querySelector('.batch-selector-shell-open');
+    if (detailsShell) {
+      bindFloatingSheetMove(notification, detailsShell);
+      bindDetentPullHandle(notification, detailsShell);
+      playPendingShellMorph(detailsShell);
+    }
 
     // =============================
     // 统一事件监听器绑定
@@ -2221,35 +3428,17 @@ function updateNotification(count) {
     setTimeout(() => {
       // --- 通用监听器 ---
       addLevelSelectorsClickEvents(notification);
-      addExpandLevelsEvents(notification); // 处理 "省略几层"
-
-      // --- 移除旧的直接绑定 ---
-      /*
-      const outputFormatHeader = document.getElementById('output-format-header');
-      const outputFormatContent = document.getElementById('output-format-content');
-      if (outputFormatHeader && outputFormatContent) {
-        outputFormatHeader.addEventListener('click', () => {
-          isOutputFormatExpanded = !isOutputFormatExpanded;
-          outputFormatContent.style.display = isOutputFormatExpanded ? 'block' : 'none';
-          outputFormatHeader.querySelector('.toggle-arrow').textContent = isOutputFormatExpanded ? '▼' : '▶';
-        });
-      }
-
-      const searchHeader = document.getElementById('search-header');
-      const searchContent = document.getElementById('search-content');
-      if (searchHeader && searchContent) {
-        searchHeader.addEventListener('click', () => {
-          isSearchExpanded = !isSearchExpanded;
-          searchContent.style.display = isSearchExpanded ? 'block' : 'none';
-          searchHeader.querySelector('.toggle-arrow').textContent = isSearchExpanded ? '▼' : '▶';
-        });
-      }
-      */
-      // --- 移除旧的直接绑定结束 ---
+      addHierarchyLevelsToggleEvents(notification);
 
       // --- 添加事件委托处理展开/折叠 ---
       notification.addEventListener('click', function(event) {
         const target = event.target;
+
+        const actionModeToggle = target.closest('#batch-selector-action-mode-toggle');
+        if (actionModeToggle) {
+          toggleCollapsedSelectionUIDetent(actionModeToggle.closest('.batch-selector-shell'));
+          return;
+        }
 
         // 处理输出格式展开/折叠
         const outputFormatHeader = target.closest('#output-format-header');
@@ -2257,44 +3446,44 @@ function updateNotification(count) {
           const outputFormatContent = notification.querySelector('#output-format-content'); // 从 notification 内部查找
           if (outputFormatContent) {
             isOutputFormatExpanded = !isOutputFormatExpanded;
-            outputFormatContent.style.display = isOutputFormatExpanded ? 'block' : 'none';
-            // 更新箭头图标
+            try { chrome.storage.local.set({ [OUTPUT_SECTION_OPEN_STORAGE_KEY]: isOutputFormatExpanded }); } catch (e) { /* 保留当前会话状态。 */ }
+            outputFormatHeader.setAttribute('aria-expanded', String(isOutputFormatExpanded));
+            animateDetailsDisclosure(
+              outputFormatContent,
+              isOutputFormatExpanded,
+              () => isOutputFormatExpanded,
+              notification
+            );
             const arrow = outputFormatHeader.querySelector('.toggle-arrow');
-            if(arrow) arrow.textContent = isOutputFormatExpanded ? '▼' : '▶';
+            if (arrow) arrow.style.transform = `rotate(${isOutputFormatExpanded ? '90deg' : '0deg'})`;
           }
         }
 
-        // 处理搜索区展开/折叠
-        const searchHeader = target.closest('#search-header');
-        if (searchHeader) {
-           const searchContent = notification.querySelector('#search-content'); // 从 notification 内部查找
-           if (searchContent) {
-             isSearchExpanded = !isSearchExpanded;
-             searchContent.style.display = isSearchExpanded ? 'block' : 'none';
-             // 更新箭头图标
-             const arrow = searchHeader.querySelector('.toggle-arrow');
-             if (arrow) arrow.textContent = isSearchExpanded ? '▼' : '▶';
-           }
+        // 像输出设置一样展开或关闭整个“文本所在层级”区块。
+        const hierarchyHeader = target.closest('#hierarchy-section-header');
+        if (hierarchyHeader) {
+          event.stopPropagation();
+          event.preventDefault();
+          const hierarchyContent = notification.querySelector('#hierarchy-section-content');
+          isHierarchySectionOpen = !isHierarchySectionOpen;
+          try { chrome.storage.local.set({ [HIERARCHY_SECTION_OPEN_STORAGE_KEY]: isHierarchySectionOpen }); } catch (e) { /* 保留当前会话状态。 */ }
+          hierarchyHeader.setAttribute('aria-expanded', String(isHierarchySectionOpen));
+          if (hierarchyContent) {
+            animateDetailsDisclosure(
+              hierarchyContent,
+              isHierarchySectionOpen,
+              () => isHierarchySectionOpen,
+              notification
+            );
+          }
+          const arrow = hierarchyHeader.querySelector('.toggle-arrow');
+          if (arrow) arrow.style.transform = `rotate(${isHierarchySectionOpen ? '90deg' : '0deg'})`;
         }
 
-        // 处理层级展开/折叠 (如果需要也可以移到这里，但当前逻辑可能没问题)
-        const hierarchyToggle = target.closest('#hierarchy-toggle');
-         if (hierarchyToggle) {
-           event.stopPropagation(); event.preventDefault();
-           isHierarchyExpanded = !isHierarchyExpanded;
-           // console.log(`【层级切换】状态已切换: isHierarchyExpanded = ${isHierarchyExpanded}`);
-           updateNotification(selectedElements.length); // 这个仍然需要重新渲染
-         }
-
-         // 处理最小化按钮
-         const minimizeButton = target.closest('#batch-selector-minimize');
-         if (minimizeButton) {
-           isUIMinimized = true;
-           try { chrome.storage.local.set({'batch-selector-ui-minimized': true}); } catch (e) { console.error('无法保存UI状态:', e); }
-           if (isViewingChildren) { isViewingChildren = false; }
-           const existingNotification = document.getElementById('batch-selector-notification');
-           if (existingNotification) { document.body.removeChild(existingNotification); }
-           updateNotification(selectedElements.length);
+         // 显示或收起第二层详情面板
+         const detailsToggle = target.closest('#batch-selector-details-toggle');
+         if (detailsToggle) {
+           transitionSelectionUIDetent(preferredCollapsedDetent, detailsToggle.closest('.batch-selector-shell'));
          }
 
          // 处理取消按钮
@@ -2307,16 +3496,10 @@ function updateNotification(count) {
          // 注意: 需要根据按钮的 ID 或 class 来区分并执行相应操作
          // 例如: viewInside, returnToParentView, selectChildElement 等原有的独立按钮事件需要移入或调整
 
-         // 处理 "内部元素" 按钮
+         // 处理“块内字段”按钮
          const insideButton = target.closest('#batch-selector-inside');
          if (insideButton && !isViewingChildren) { // 仅在主界面模式下响应
              viewInside();
-         }
-
-         // 处理 "操作指南" 按钮
-         const guideButton = target.closest('#batch-selector-guide');
-         if (guideButton && !isViewingChildren) { // 仅在主界面模式下响应
-             showGuide();
          }
 
          // 处理 "快捷键" 按钮
@@ -2362,75 +3545,20 @@ function updateNotification(count) {
              }
          }
 
-         // 处理搜索按钮 (主界面模式)
-         const searchButton = target.closest('#batch-selector-search-btn');
-         if (searchButton && !isViewingChildren) { // 仅在主界面模式下响应
-             executeSearch();
+         // 第一层直接扩展同结构文本。
+         const selectSimilarButton = target.closest('#batch-selector-select-similar');
+         if (selectSimilarButton && !isViewingChildren) {
+           selectAllElements();
          }
-
-         // 处理搜索结果导航 (主界面模式)
-         const searchPrevButton = target.closest('#batch-selector-search-prev');
-         if (searchPrevButton && !isViewingChildren) { jumpToPreviousSearchResult(); }
-         const searchNextButton = target.closest('#batch-selector-search-next');
-         if (searchNextButton && !isViewingChildren) { jumpToNextSearchResult(); }
-         const searchAddAllButton = target.closest('#batch-selector-search-add-all');
-         if (searchAddAllButton && !isViewingChildren) { addAllSearchResultsToSelection(); }
 
          // 新增：处理复制按钮点击
          const copyButton = target.closest('#batch-selector-copy-btn');
          if (copyButton && !isViewingChildren) { // 仅在主界面模式下响应
-            const textToCopy = updateClipboard(); // 获取处理后的文本
-            // 强制写入剪贴板
-            if (textToCopy !== undefined && textToCopy !== null) {
-                 navigator.clipboard.writeText(textToCopy)
-                    .then(() => {
-                        showTemporaryMessage('已复制选中内容到剪贴板');
-                    })
-                    .catch(err => {
-                         showTemporaryMessage('复制到剪贴板失败');
-                         // console.error('复制按钮点击失败:', err);
-                    });
-            } else {
-                showTemporaryMessage('没有内容可复制');
-            }
+            copySelectionToClipboard();
          }
 
       });
       // --- 事件委托结束 ---
-
-      // --- 移除帮助图标的旧处理 ---
-      /*
-      const searchHelpIcon = document.getElementById('search-help-icon');
-      // 移除自定义帮助内容相关代码，现在使用系统tooltip
-      */
-
-      // --- 移除层级展开的旧处理 (已移入事件委托) ---
-      /*
-      const hierarchyToggle = document.getElementById('hierarchy-toggle');
-      if (hierarchyToggle) {
-        hierarchyToggle.addEventListener('click', function(event) {
-          event.stopPropagation(); event.preventDefault();
-          isHierarchyExpanded = !isHierarchyExpanded;
-          // console.log(`【层级切换】状态已切换: isHierarchyExpanded = ${isHierarchyExpanded}`);
-          updateNotification(selectedElements.length); // <--- 修改点
-        });
-      }
-      */
-
-      // --- 移除最小化按钮的旧处理 (已移入事件委托) ---
-      /*
-      const minimizeButton = document.getElementById('batch-selector-minimize');
-      if (minimizeButton) {
-         minimizeButton.addEventListener('click', function() {
-           isUIMinimized = true;
-           try { chrome.storage.local.set({'batch-selector-ui-minimized': true}); } catch (e) { console.error('无法保存UI状态:', e); }
-           if (isViewingChildren) { isViewingChildren = false; }
-           const existingNotification = document.getElementById('batch-selector-notification');
-           if (existingNotification) { document.body.removeChild(existingNotification); }
-           updateNotification(selectedElements.length);
-         });
-      }
-      */
 
       // --- 移除取消按钮的旧处理 (已移入事件委托) ---
       /*
@@ -2456,29 +3584,8 @@ function updateNotification(count) {
             try { chrome.storage.local.set({'batch-selector-clipboard-format': clipboardFormat}); } catch (e) { /* console.error('无法保存设置:', e); */ }
             updateClipboard(); // 更新剪贴板
 
-            // 更新所有 radio 按钮的父标签样式
-            formatRadios.forEach(r => {
-                const label = r.closest('label'); // 使用 closest 更安全
-                if (label) {
-                  label.style.backgroundColor = r.value === newlySelectedFormat ? 'rgba(66, 133, 244, 0.8)' : 'rgba(255, 255, 255, 0.1)';
-                }
-            });
           }
         });
-        // Label 点击触发 Radio change (保持不变)
-        const label = radio.closest('label');
-        if(label){
-          label.addEventListener('click', function(e) {
-             // 防止 label 的点击事件触发 notification 的委托事件 (如果需要的话)
-             // e.stopPropagation();
-          const input = this.querySelector('input');
-             if (input && !input.checked) { // 只有当未选中时才手动触发
-                 input.checked = true;
-                 // 手动触发 change 事件
-                 input.dispatchEvent(new Event('change', { bubbles: true }));
-             }
-          });
-        }
       });
 
       // 文本清理 Checkbox (保持不变)
@@ -2503,18 +3610,6 @@ function updateNotification(count) {
         });
       });
 
-      // 搜索输入框 Enter 键处理 (保持不变)
-      const searchInput = notification.querySelector('#batch-selector-search-input');
-      if (searchInput && !isViewingChildren) {
-          searchInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              if (searchResults.length > 0) { jumpToNextSearchResult(); }
-              else { executeSearch(); }
-            }
-          });
-        }
-
       // --- 移除已移入事件委托的按钮监听器 ---
       /*
       if (isViewingChildren) {
@@ -2531,18 +3626,6 @@ function updateNotification(count) {
         // ... cleanupCheckboxes ... (保留)
         const insideButton = document.getElementById('batch-selector-inside');
         if (insideButton) { ... } // 移入委托
-        const guideButton = document.getElementById('batch-selector-guide');
-        if (guideButton) { ... } // 移入委托
-        // ... 搜索功能事件监听器 ...
-        const searchButton = notification.querySelector('#batch-selector-search-btn');
-        if (searchButton) { ... } // 移入委托
-        // ... searchInput keypress ... (保留)
-        const searchPrevButton = notification.querySelector('#batch-selector-search-prev');
-        if (searchPrevButton) { ... } // 移入委托
-        const searchNextButton = notification.querySelector('#batch-selector-search-next');
-        if (searchNextButton) { ... } // 移入委托
-        const searchAddAllButton = notification.querySelector('#batch-selector-search-add-all');
-        if (searchAddAllButton) { ... } // 移入委托
       }
       */
 
@@ -2574,14 +3657,8 @@ function updateNotification(count) {
 // =============================================
 // 取消选择指定类型的所有元素
 function cancelElementTypeSelection(typeKey) {
-  // 从类型键中提取标签名和类名
-  const [tagName, className] = typeKey.split('.');
-
   // 找出所有匹配该类型的元素
-  const typeElements = selectedElements.filter(el =>
-    el.tagName.toLowerCase() === tagName &&
-    (el.className || '') === className
-  );
+  const typeElements = selectedElements.filter(el => matchesElementType(el, typeKey));
 
   // 如果没有找到匹配的元素，直接返回
   if (typeElements.length === 0) {
@@ -2590,21 +3667,18 @@ function cancelElementTypeSelection(typeKey) {
 
   // 清除所有匹配元素的高亮
   typeElements.forEach(el => {
-    el.style.outline = '';
+    unmarkElementSelected(el);
   });
 
   // 从选中列表中移除该类型的所有元素
-  selectedElements = selectedElements.filter(el =>
-    !(el.tagName.toLowerCase() === tagName &&
-      (el.className || '') === className)
-  );
+  selectedElements = selectedElements.filter(el => !matchesElementType(el, typeKey));
 
   // 如果当前选中的元素类型是被取消的类型，重置当前元素类型
   if (currentElementTypeKey === typeKey) {
     // 如果还有其他类型的元素被选中，设置为第一个元素的类型
     if (selectedElements.length > 0) {
       const firstElement = selectedElements[0];
-      currentElementTypeKey = `${firstElement.tagName.toLowerCase()}.${firstElement.className || ''}`;
+      currentElementTypeKey = getElementTypeKey(firstElement);
 
       // 更新父元素链，确保层级UI正确显示
       collectParentChain(firstElement);
@@ -2629,18 +3703,8 @@ function cancelElementTypeSelection(typeKey) {
 
 // 切换到指定类型的元素并显示其层级
 function switchToElementType(typeKey) {
-  // 从选中元素中找到匹配指定类型的第一个元素
-  const [tagName, className] = typeKey.split('.');
-
   // 查找第一个匹配的元素
-  let targetElement = null;
-  for (const el of selectedElements) {
-    if (el.tagName.toLowerCase() === tagName &&
-        (el.className || '') === className) {
-      targetElement = el;
-      break;
-    }
-  }
+  const targetElement = selectedElements.find(el => matchesElementType(el, typeKey)) || null;
 
   if (!targetElement) {
     return; // 未找到匹配元素
@@ -2649,7 +3713,7 @@ function switchToElementType(typeKey) {
   // 更新当前选中的元素类型
   currentElementTypeKey = typeKey;
 
-  // 重置子元素视图状态，确保可以重新查看内部元素
+  // 重置字段视图状态，确保可以重新查看块内字段
   isViewingChildren = false;
 
   // 更新父元素链并重置索引
@@ -2679,31 +3743,18 @@ function switchToLevel(index) {
 
   // 如果当前正在查看某个特定元素类型，仅影响该类型的层级视图
   if (currentElementTypeKey) {
-    const [tagName, className] = currentElementTypeKey.split('.');
-
     // 先移除旧的高亮
     selectedElements.forEach(el => {
-      if (el.tagName.toLowerCase() === tagName &&
-          (el.className || '') === className) {
-        el.style.outline = '';
+      if (matchesElementType(el, currentElementTypeKey)) {
+        unmarkElementSelected(el);
       }
     });
 
     // 存储当前选中的所有同类型元素
-    const currentTypeElements = selectedElements.filter(el =>
-      el.tagName.toLowerCase() === tagName &&
-      (el.className || '') === className
-    );
+    const currentTypeElements = selectedElements.filter(el => matchesElementType(el, currentElementTypeKey));
 
     // 从选中列表中移除当前类型的元素
-    selectedElements = selectedElements.filter(el =>
-      !(el.tagName.toLowerCase() === tagName &&
-        (el.className || '') === className)
-    );
-
-    // 获取目标层级的标签和类名
-    const targetTagName = currentElement.tagName.toLowerCase();
-    const targetClassName = currentElement.className || '';
+    selectedElements = selectedElements.filter(el => !matchesElementType(el, currentElementTypeKey));
 
     // 收集要添加的新元素
     const newElements = [];
@@ -2737,22 +3788,22 @@ function switchToLevel(index) {
 
     // 添加新元素到选中列表并高亮
     newElements.forEach(el => {
-      el.style.outline = '2px solid blue';
+      markElementSelected(el);
       selectedElements.push(el);
     });
 
     // 如果有新元素，更新当前元素类型
     if (newElements.length > 0) {
       const firstElement = newElements[0];
-      currentElementTypeKey = `${firstElement.tagName.toLowerCase()}.${firstElement.className || ''}`;
+      currentElementTypeKey = getElementTypeKey(firstElement);
 
       // 重置子元素链
       collectChildrenChain(firstElement);
     } else {
       // 如果没有找到新元素，保持原样但更新UI
-      currentElement.style.outline = '2px solid blue';
+      markElementSelected(currentElement);
       selectedElements.push(currentElement);
-      currentElementTypeKey = `${targetTagName}.${targetClassName}`;
+      currentElementTypeKey = getElementTypeKey(currentElement);
 
       // 重置子元素链
       collectChildrenChain(currentElement);
@@ -2771,18 +3822,18 @@ function switchToLevel(index) {
   // 清除当前选择
   selectedElements.forEach(el => {
     if (el && el.style) {
-      el.style.outline = '';
+      unmarkElementSelected(el);
     }
   });
 
   // 高亮当前层级的元素
-  currentElement.style.outline = '2px solid blue';
+  markElementSelected(currentElement);
 
   // 更新选中元素列表，只包含当前元素
   selectedElements = [currentElement];
 
   // 更新当前元素类型
-  currentElementTypeKey = `${currentElement.tagName.toLowerCase()}.${currentElement.className || ''}`;
+  currentElementTypeKey = getElementTypeKey(currentElement);
 
   // 更新通知
   updateNotification(selectedElements.length);
@@ -2835,8 +3886,9 @@ function generateSelectorForElement(element) {
   }
 
   // 添加类名（如果有）
-  if (element.className) {
-    const classes = element.className.split(' ');
+  const className = getElementClassName(element);
+  if (className) {
+    const classes = className.split(' ');
     classes.forEach(cls => {
       if (cls.trim()) {
         selector += `.${cls.trim()}`;
@@ -2877,22 +3929,8 @@ function showTemporaryMessage(message) {
 function showTemporaryGlobalMessage(message, duration) {
   const msgElement = document.createElement('div');
   msgElement.id = 'batch-selector-global-msg';
-  msgElement.style.position = 'fixed';
-  msgElement.style.top = '50%';
-  msgElement.style.left = '50%';
-  msgElement.style.transform = 'translate(-50%, -50%)';
-  msgElement.style.padding = '15px 25px';
-  msgElement.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
-  msgElement.style.color = 'white';
-  msgElement.style.borderRadius = '5px';
-  msgElement.style.zIndex = '10002';
-  msgElement.style.fontSize = '16px';
-  msgElement.style.fontFamily = 'system-ui, -apple-system, sans-serif';
-  msgElement.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
-  msgElement.style.textAlign = 'center';
   msgElement.textContent = message;
-  msgElement.classList.add('batch-selector-ui');
-  msgElement.setAttribute('class', 'batch-selector-ui');
+  msgElement.className = 'batch-selector-ui treeclip-floating-surface treeclip-global-toast';
 
   // 阻止默认点击行为
   msgElement.addEventListener('mousedown', function(e) {
@@ -2931,91 +3969,10 @@ function showTemporaryGlobalMessage(message, duration) {
 // =============================================
 // 选择状态管理 - 重置和取消选择状态
 // =============================================
-// 重置选择状态
-function resetSelection() {
-  // 移除所有高亮
-  clickedElements.forEach(el => {
-    if (el && el.style) {
-      el.style.outline = '';
-    }
-  });
-
- // 重置点击记录
-  clickedElements = [];
-}
-
 // 取消选择，移除所有高亮和通知
 function cancelSelection() {
-  // 移除所有高亮 - 已点击的元素
-  clickedElements.forEach(el => {
-    if (el && el.style) {
-      el.style.outline = '';
-      el.style.outlineWidth = '';
-      el.style.outlineStyle = '';
-      el.style.outlineColor = '';
-    }
-  });
-
-  // 移除所有高亮 - 已选中的元素
-  selectedElements.forEach(el => {
-    if (el && el.style) {
-      el.style.outline = '';
-      el.style.outlineWidth = '';
-      el.style.outlineStyle = '';
-      el.style.outlineColor = '';
-    }
-  });
-
-  // 确保移除页面上所有可能被添加了高亮的元素
-  // 使用多种选择器尝试匹配所有可能的边框样式
-  const selectors = [
-    '[style*="outline: 2px solid red"]',
-    '[style*="outline:2px solid red"]',
-    '[style*="outline: 2px solid #"]', // 匹配任何十六进制颜色
-    '[style*="outline: 2px solid rgb"]', // 匹配RGB颜色
-    '[style*="outline: 2px solid blue"]',
-    '[style*="outline:2px solid blue"]',
-    '[style*="outline-color: red"]',
-    '[style*="outline-color: blue"]',
-    '[style*="outline-width: 2px"]',
-    '[style*="outline-style: solid"]'
-  ];
-
-  // 对每个选择器进行匹配和清除
-  selectors.forEach(selector => {
-    try {
-      const elements = document.querySelectorAll(selector);
-      elements.forEach(el => {
-        if (el && el.style) {
-          el.style.outline = '';
-          el.style.outlineWidth = '';
-          el.style.outlineStyle = '';
-          el.style.outlineColor = '';
-        }
-      });
-          } catch (e) {
-      console.error('清除样式错误:', e);
-    }
-  });
-
-  // 备用方案：遍历所有元素，检查并清除包含red或blue的outline样式
-  try {
-    const allElements = document.querySelectorAll('*');
-    allElements.forEach(el => {
-      if (el && el.style && el.style.outline) {
-        const outlineStyle = el.style.outline.toLowerCase();
-        if (outlineStyle.includes('red') || outlineStyle.includes('blue') ||
-            outlineStyle.includes('solid') || outlineStyle.includes('2px')) {
-          el.style.outline = '';
-          el.style.outlineWidth = '';
-          el.style.outlineStyle = '';
-          el.style.outlineColor = '';
-        }
-      }
-    });
-  } catch (e) {
-    console.error('备用清除样式错误:', e);
-  }
+  // 只清除 TreeClip 添加的高亮类，不修改宿主页面原有的 outline。
+  clearSelectionHighlights();
 
   // 移除通知
   const notification = document.getElementById('batch-selector-notification');
@@ -3028,33 +3985,38 @@ function cancelSelection() {
     document.body.removeChild(infoNotification);
   }
 
+  if (typePromptTimeoutId !== null) {
+    clearTimeout(typePromptTimeoutId);
+    typePromptTimeoutId = null;
+  }
+  document.getElementById('batch-selector-prompt')?.remove();
+
+  if (copyFeedbackTimeoutId !== null) {
+    clearTimeout(copyFeedbackTimeoutId);
+    copyFeedbackTimeoutId = null;
+  }
+
   // 重置所有状态
-  clickedElements = [];
   selectedElements = [];
   currentSelector = '';
-  selectorHistory = [];
-  selectorHistoryIndex = -1;
   parentChain = [];
   parentChainIndex = 0;
   childrenChain = [];
   isViewingChildren = false;
   currentElementTypeKey = '';
+  pendingShellMorphRect = null;
+  Object.keys(detentSizeCache).forEach(key => { delete detentSizeCache[key]; });
+  isDetailsTransitioning = false;
 
-  // 清除文本搜索状态
-  searchTerm = '';
-  removeSearchHighlight(); // 移除搜索高亮
-  searchResults = [];
-  currentSearchResultIndex = -1;
 }
 
 // =============================================
 // 剪贴板管理系统 - 处理选中内容的复制和格式化
 // =============================================
 // 更新剪贴板内容函数
-function updateClipboard() {
+function updateClipboard({ write = isRealtimeCopyEnabled } = {}) {
   if (selectedElements.length === 0) {
-    navigator.clipboard.writeText('').catch(err => {}); // 清空剪贴板
-    return; // 如果没有选中元素，不进行操作
+    return ''; // 没有选中元素时保留用户现有剪贴板内容
   }
 
   // 检查当前选中元素是否仍然有效（可能已被删除）
@@ -3071,8 +4033,7 @@ function updateClipboard() {
       parentChain = [];
       parentChainIndex = 0;
       childrenChain = [];
-      navigator.clipboard.writeText('').catch(err => {}); // 清空剪贴板
-      return;
+      return '';
     }
   }
 
@@ -3089,84 +4050,67 @@ function updateClipboard() {
 
   // 如果过滤后没有元素了，也直接返回
   if (elementsToCopy.length === 0) {
-      navigator.clipboard.writeText('').catch(err => {}); // 清空剪贴板
-      return;
+      return '';
   }
 
-  // --- 新逻辑：使用 textContent 并进行空白符规范化 ---
-  let processedTexts = elementsToCopy.map(el => {
-      // 1. 获取 textContent，它直接连接文本节点，避免innerText的空格问题
-      let text = el.textContent || ''; // 使用 || '' 防止 null 或 undefined
-
-      // 2. 全局空白符规范化：将所有连续空白替换为单个空格
-      let normalizedText = text.replace(/\s+/g, ' ');
-
-      // 3. 应用清理选项
-      let cleaned = normalizedText; // 从规范化后的文本开始清理
-
-      // 应用其他清理规则...
-          if (removeCodePatterns) {
-          cleaned = cleaned.replace(/{[^}]*}|\([^)]*\)|<[^>]*>|\[[^]]*\]/g, ' '); // 替换为 空格 以免单词粘连
-          }
-          if (removeSymbols) {
-          // 保留空格，替换符号为空格
-          cleaned = cleaned.replace(/[~`!@#$%^&*()_\-+={}\[\]|\\:;'"<>,.?\/]+/g, ' ');
-          }
-          if (removeEnglish) {
-              cleaned = cleaned.replace(/[a-zA-Z]+/g, ' ');
-          }
-          if (removeChinese) {
-              cleaned = cleaned.replace(/[\u4e00-\u9fa5]+/g, ' ');
-          }
-          if (removeNumbers) {
-              cleaned = cleaned.replace(/[0-9]+/g, ' ');
-          }
-      // 应用 "文本空格" 选项，移除所有内部空格
-          if (removeInternalSpaces) {
-          // 移除所有单空格，实现单词连接
-          cleaned = cleaned.replace(/ /g, '');
-          }
-
-      // 清理后可能产生额外的连续空格，再次进行规范化和 trim (可选但推荐)
-      cleaned = cleaned.replace(/\s+/g, ' ').trim();
-
-          return cleaned;
-      });
-
-  // 4. 过滤掉清理后为空字符串的项
-  processedTexts = processedTexts.filter(text => text.length > 0);
-  // --- 新逻辑结束 ---
-
-  // 如果启用了去重选项 (现在对处理后的文本应用)
-  if (removeDuplicates) {
-    // 使用 Set 来获取唯一项，然后转回数组
-    processedTexts = Array.from(new Set(processedTexts));
-  }
-
-  // 根据设置的格式组合文本 (使用新的 processedTexts)
-  let collectedText = '';
-
-  switch (clipboardFormat) {
-    case 'space':
-      collectedText = processedTexts.join(' ');
-      break;
-    case 'comma':
-      collectedText = processedTexts.join(',');
-      break;
-    case 'newline':
-    default:
-      collectedText = processedTexts.join('\n');
-      break;
-  }
+  const collectedText = formatSelectedTexts(
+    elementsToCopy.map(element => element.textContent || ''),
+    {
+      clipboardFormat,
+      removeCodePatterns,
+      removeSymbols,
+      removeEnglish,
+      removeChinese,
+      removeNumbers,
+      removeInternalSpaces,
+      removeDuplicates
+    }
+  );
 
   // 仅在启用实时复制时才写入剪贴板
-  if (isRealtimeCopyEnabled) {
+  if (write) {
     navigator.clipboard.writeText(collectedText)
       // .then(() => console.log('已更新剪贴板内容'))
       .catch(err => { /* console.error('更新剪贴板失败: ', err); */ });
   }
 
   return collectedText; // 总是返回处理后的文本
+}
+
+async function copySelectionToClipboard() {
+  const hasVisibleCopyButton = playCopyButtonFeedback();
+  const textToCopy = updateClipboard({ write: false });
+  if (!textToCopy) {
+    if (!hasVisibleCopyButton) showTemporaryMessage(t('msg_no_content'));
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(textToCopy);
+    if (!hasVisibleCopyButton) showTemporaryMessage(t('msg_copied'));
+  } catch {
+    if (!hasVisibleCopyButton) showTemporaryMessage(t('msg_copy_failed'));
+  }
+}
+
+function playCopyButtonFeedback() {
+  const button = document.getElementById('batch-selector-copy-btn');
+  if (!button) return false;
+
+  if (copyFeedbackTimeoutId !== null) {
+    clearTimeout(copyFeedbackTimeoutId);
+    copyFeedbackTimeoutId = null;
+  }
+
+  button.classList.remove('batch-selector-copy-feedback');
+  void button.offsetWidth;
+  button.classList.add('batch-selector-copy-feedback');
+  copyFeedbackTimeoutId = setTimeout(() => {
+    if (button.isConnected) button.classList.remove('batch-selector-copy-feedback');
+    copyFeedbackTimeoutId = null;
+  }, 200);
+
+  return true;
 }
 
 // =============================================
@@ -3181,49 +4125,24 @@ function selectByHierarchy(levelIndex) {
   // 检查是否尝试绑定高层级（低索引）到低层级（高索引）
   if (levelIndex < parentChainIndex) {
     // 显示无法绑定的提示，但不中断操作
-    showTemporaryMessage('无法绑定高层级到低层级元素');
+    showTemporaryMessage(t('msg_invalid_hierarchy_binding'));
     return;
   }
 
-  // 获取当前元素链
-  const targetElementChain = parentChain.slice(0, levelIndex + 1);
-  // 颠倒顺序，从上到下（从根到叶）
-  targetElementChain.reverse();
-
   // 获取当前元素类型
   const currentElement = parentChain[parentChainIndex];
-  const currentTagName = currentElement.tagName.toLowerCase();
-  const currentClassName = currentElement.className || '';
+  const currentTypeKey = getElementTypeKey(currentElement);
 
   // 获取目标层级元素
   const targetElement = parentChain[levelIndex];
-  const targetTagName = targetElement.tagName.toLowerCase();
-  const targetClassName = targetElement.className || '';
-
-  // 保存当前选中的元素，以便后续恢复
-  const currentSelectedElements = [...selectedElements];
-
-  // 获取当前选中的该类型元素
-  let currentTypeElements = [];
-  if (currentElementTypeKey) {
-    const [tagName, className] = currentElementTypeKey.split('.');
-    currentTypeElements = selectedElements.filter(el =>
-      el.tagName.toLowerCase() === tagName &&
-      (el.className || '') === className
-    );
-  }
+  const targetTypeKey = getElementTypeKey(targetElement);
 
   // 寻找页面上所有符合当前元素类型的元素
-  const potentialElements = document.querySelectorAll(currentTagName);
+  const potentialElements = getElementsByTypeKey(currentTypeKey);
   const matchedElements = [];
 
   // 对每个潜在元素检查其层级
   for (const element of potentialElements) {
-    // 如果元素类名不匹配，跳过
-    if ((element.className || '') !== currentClassName) {
-      continue;
-    }
-
     // 收集元素的父元素链
     const elementChain = [];
     let current = element;
@@ -3245,12 +4164,10 @@ function selectByHierarchy(levelIndex) {
     for (let i = 0; i < elementChain.length; i++) {
       const hierarchyElement = elementChain[i];
 
-      if (hierarchyElement.tagName.toLowerCase() === targetTagName &&
-          (hierarchyElement.className || '') === targetClassName) {
+      if (matchesElementType(hierarchyElement, targetTypeKey)) {
         // 如果找到匹配的目标层级，检查相对位置关系是否与参考链一致
         if (i < elementChain.length - 1 &&
-            elementChain[elementChain.length - 1].tagName.toLowerCase() === currentTagName &&
-            (elementChain[elementChain.length - 1].className || '') === currentClassName) {
+            matchesElementType(elementChain[elementChain.length - 1], currentTypeKey)) {
           hasMatchingHierarchy = true;
           break;
         }
@@ -3268,19 +4185,14 @@ function selectByHierarchy(levelIndex) {
 
   // 只有在不是当前层级时，才清除当前元素类型的高亮
   if (currentElementTypeKey && !isCurrentLevel) {
-    const [tagName, className] = currentElementTypeKey.split('.');
     selectedElements.forEach(el => {
-      if (el.tagName.toLowerCase() === tagName &&
-          (el.className || '') === className) {
-        el.style.outline = '';
+      if (matchesElementType(el, currentElementTypeKey)) {
+        unmarkElementSelected(el);
       }
     });
 
     // 从选中列表中移除当前类型的元素
-    selectedElements = selectedElements.filter(el =>
-      !(el.tagName.toLowerCase() === tagName &&
-        (el.className || '') === className)
-    );
+    selectedElements = selectedElements.filter(el => !matchesElementType(el, currentElementTypeKey));
   }
 
   // 如果是当前层级，只添加新的匹配元素
@@ -3290,19 +4202,19 @@ function selectByHierarchy(levelIndex) {
 
     // 高亮新的匹配元素并添加到选中列表
     newElements.forEach(el => {
-      el.style.outline = '2px solid blue';
+      markElementSelected(el);
       selectedElements.push(el);
     });
   } else {
     // 不是当前层级，添加所有匹配元素
     matchedElements.forEach(el => {
-      el.style.outline = '2px solid blue';
+      markElementSelected(el);
       selectedElements.push(el);
     });
   }
 
   // 更新当前元素类型
-  currentElementTypeKey = `${currentTagName}.${currentClassName}`;
+  currentElementTypeKey = getElementTypeKey(currentElement);
 
   // 存储匹配的层级索引，用于高亮显示
   // 使用元素类型关联的匹配层级索引
@@ -3396,9 +4308,11 @@ function addLevelSelectorsClickEvents(notification) {
 // 取消层级匹配
 function cancelHierarchyMatch() {
   // 如果没有当前元素类型的匹配层级，不执行任何操作
-  if (!matchedLevelIndices[currentElementTypeKey]) {
+  if (matchedLevelIndices[currentElementTypeKey] === undefined) {
     return;
   }
+
+  const typeKeyToRestore = currentElementTypeKey;
 
   // 检查当前选中元素是否仍然有效（可能已被删除）
   // 过滤掉已经不在DOM中的元素
@@ -3406,51 +4320,37 @@ function cancelHierarchyMatch() {
 
   // 如果过滤后没有元素了，清空选择并返回
   if (selectedElements.length === 0) {
+    delete matchedLevelIndices[typeKeyToRestore];
     currentElementTypeKey = '';
     parentChain = [];
     parentChainIndex = 0;
     childrenChain = [];
-    delete matchedLevelIndices[currentElementTypeKey];
     return;
   }
 
-  // 获取当前匹配的层级
-  const matchedLevel = matchedLevelIndices[currentElementTypeKey];
-
   // 重置当前元素类型的匹配层级索引
-  delete matchedLevelIndices[currentElementTypeKey];
+  delete matchedLevelIndices[typeKeyToRestore];
 
   // 如果当前元素类型存在
   if (currentElementTypeKey) {
-    const [tagName, className] = currentElementTypeKey.split('.');
-
     // 获取当前选中的该类型元素
-    const currentTypeElements = selectedElements.filter(el =>
-      el.tagName.toLowerCase() === tagName &&
-      (el.className || '') === className
-    );
+    const currentTypeElements = selectedElements.filter(el => matchesElementType(el, currentElementTypeKey));
 
     // 无论是否有选中的元素，都重新选择所有匹配当前元素类型的元素（不考虑层级）
     // 清除当前类型元素的高亮
     currentTypeElements.forEach(el => {
-      el.style.outline = '';
+      unmarkElementSelected(el);
     });
 
     // 从选中列表中移除当前类型的元素
-    selectedElements = selectedElements.filter(el =>
-      !(el.tagName.toLowerCase() === tagName &&
-        (el.className || '') === className)
-    );
+    selectedElements = selectedElements.filter(el => !matchesElementType(el, currentElementTypeKey));
 
     // 重新选择所有匹配当前元素类型的元素
-    const allMatchingElements = document.querySelectorAll(tagName);
-    const filteredElements = Array.from(allMatchingElements).filter(el =>
-      (el.className || '') === className
-    );
+    const filteredElements = getElementsByTypeKey(currentElementTypeKey);
 
     // 高亮所有匹配元素
     filteredElements.forEach(el => {
-      el.style.outline = '2px solid blue';
+      markElementSelected(el);
       selectedElements.push(el);
     });
 
@@ -3476,9 +4376,15 @@ function loadUserSettings() {
       'batch-selector-remove-chinese': false,
       'batch-selector-remove-numbers': false,
       'batch-selector-remove-duplicates': false,
-      'batch-selector-ui-minimized': false, // Default changed back to expanded
       'batch-selector-hide-type-prompt': false,
-      'batch-selector-realtime-copy': true, // 新增：实时复制设置默认值
+      'batch-selector-hierarchy-expanded': false,
+      [HIERARCHY_SECTION_OPEN_STORAGE_KEY]: false,
+      [OUTPUT_SECTION_OPEN_STORAGE_KEY]: false,
+      [TREECLIP_LOCALE_STORAGE_KEY]: null,
+      [SELECTION_UI_DETENT_STORAGE_KEY]: 'actions',
+      [SELECTION_UI_COLLAPSED_DETENT_STORAGE_KEY]: 'actions',
+      [FLOATING_BOX_POSITION_STORAGE_KEY]: null,
+      'batch-selector-realtime-copy': false, // 新增：实时复制设置默认值
       'batch-selector-select-key-keys': JSON.stringify(['Shift']), // 默认选择键
       'batch-selector-type-select-key-keys': JSON.stringify(['f']), // 默认类型选择键
       'batch-selector-copy-key-keys': JSON.stringify(['Control', 'c']) // 默认复制组合键
@@ -3496,9 +4402,24 @@ function loadUserSettings() {
       removeChinese = items['batch-selector-remove-chinese'];
       removeNumbers = items['batch-selector-remove-numbers'];
       removeDuplicates = items['batch-selector-remove-duplicates'];
-      isUIMinimized = items['batch-selector-ui-minimized'];
       hideTypePrompt = items['batch-selector-hide-type-prompt'];
-      isHierarchyExpanded = false; // Always start collapsed
+      isHierarchyExpanded = Boolean(items['batch-selector-hierarchy-expanded']);
+      isHierarchySectionOpen = Boolean(items[HIERARCHY_SECTION_OPEN_STORAGE_KEY]);
+      isOutputFormatExpanded = Boolean(items[OUTPUT_SECTION_OPEN_STORAGE_KEY]);
+      const storedLocale = items[TREECLIP_LOCALE_STORAGE_KEY];
+      if (SUPPORTED_TREECLIP_LOCALES.has(storedLocale)) {
+        void setTreeClipLocale(storedLocale).then(applied => {
+          if (applied) refreshLocalizedTreeClipUI();
+        });
+      }
+      const savedDetent = ['actions', 'compact', 'details'].includes(items[SELECTION_UI_DETENT_STORAGE_KEY])
+        ? items[SELECTION_UI_DETENT_STORAGE_KEY]
+        : 'actions';
+      preferredCollapsedDetent = items[SELECTION_UI_COLLAPSED_DETENT_STORAGE_KEY] === 'compact' ? 'compact' : 'actions';
+      isDetailsPanelOpen = savedDetent === 'details';
+      isActionBarCompact = savedDetent === 'compact';
+      if (savedDetent === 'actions' || savedDetent === 'compact') preferredCollapsedDetent = savedDetent;
+      restoreFloatingBoxPosition(items[FLOATING_BOX_POSITION_STORAGE_KEY]);
       isRealtimeCopyEnabled = items['batch-selector-realtime-copy']; // 新增：加载实时复制设置
 
       // 加载快捷键配置
@@ -3513,9 +4434,7 @@ function loadUserSettings() {
         copyKeyConfig = { keys: ['Control', 'c'] };
       }
 
-      // console.log(`loadUserSettings: Globals set - removeSpaces=${removeSpaces}, removeCodePatterns=${removeCodePatterns}, isUIMinimized=${isUIMinimized}`); // Log after setting globals - REMOVED
       // 新的 Log (如果需要)
-      // console.log(`loadUserSettings: Globals set - removeLeadingTrailing=${removeLeadingTrailingSpaces}, removeInternal=${removeInternalSpaces}, isUIMinimized=${isUIMinimized}`);
     });
   } catch (e) {
     console.error('loadUserSettings Error:', e);
@@ -3873,64 +4792,55 @@ function showKeyConfigPanel() {
   }
 
   isShowingKeyConfig = true;
-  isKeyConfigExpanded = true;
 
   // 创建配置面板
   const configPanel = document.createElement('div');
   configPanel.id = 'batch-selector-key-config';
-  configPanel.className = 'batch-selector-ui';
-  configPanel.style.position = 'fixed';
-  configPanel.style.bottom = '20px';
-  configPanel.style.left = '20px';
-  configPanel.style.padding = '12px';
-  configPanel.style.backgroundColor = 'rgba(0, 0, 0, 0.85)';
-  configPanel.style.color = 'white';
-  configPanel.style.borderRadius = '5px';
-  configPanel.style.zIndex = '10001';
-  configPanel.style.width = '260px';
-  configPanel.style.boxShadow = '0 2px 10px rgba(0,0,0,0.3)';
-  configPanel.style.fontFamily = 'system-ui, -apple-system, sans-serif';
-  configPanel.style.fontSize = '13px';
+  configPanel.className = 'batch-selector-ui treeclip-floating-surface treeclip-key-config';
 
   // 配置面板内容
   configPanel.innerHTML = `
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-      <h3 style="margin: 0; font-size: 15px;">${t('ui_shortcuts_config')}</h3>
-      <button id="batch-selector-key-config-close" class="batch-selector-ui" style="background: none; border: none; color: white; cursor: pointer; font-size: 18px; padding: 0 5px;">×</button>
+    <div class="treeclip-floating-header">
+      <h3 class="treeclip-floating-title">${t('ui_shortcuts_config')}</h3>
+      <button id="batch-selector-key-config-close" class="batch-selector-ui treeclip-floating-close" aria-label="${t('ui_close')}">×</button>
     </div>
-
-    <div style="margin-bottom: 10px;">
-      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">${t('ui_select_key')}</div>
-      <div id="select-key-container" style="background: rgba(255,255,255,0.1); padding: 6px; border-radius: 4px; margin-bottom: 3px;">
-        <div id="select-key-display" style="height: 22px; line-height: 22px; padding: 0 6px; background: rgba(255,255,255,0.2); border-radius: 3px; cursor: pointer; text-align: center;">${selectKeyConfig.keys.map(formatKeyForDisplay).join(' + ')}</div>
-        <div id="select-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">${t('ui_conflict_warning')}</div>
+    <div class="treeclip-floating-body">
+      <div class="treeclip-shortcut-list">
+        <div id="select-key-container" class="treeclip-floating-card treeclip-shortcut-item">
+          <div class="treeclip-shortcut-label">${t('ui_select_key')}</div>
+          <div id="select-key-display" class="treeclip-shortcut-display">${escapeHtml(selectKeyConfig.keys.map(formatKeyForDisplay).join(' + '))}</div>
+          <div id="select-key-conflict" class="treeclip-shortcut-conflict">${t('ui_conflict_warning')}</div>
+          <div class="treeclip-shortcut-description">${t('ui_select_key_desc')}</div>
+        </div>
+        <div id="type-select-key-container" class="treeclip-floating-card treeclip-shortcut-item">
+          <div class="treeclip-shortcut-label">${t('ui_type_select_key')}</div>
+          <div id="type-select-key-display" class="treeclip-shortcut-display">${escapeHtml(typeSelectKeyConfig.keys.map(formatKeyForDisplay).join(' + '))}</div>
+          <div id="type-select-key-conflict" class="treeclip-shortcut-conflict">${t('ui_conflict_warning')}</div>
+          <div class="treeclip-shortcut-description">${t('ui_type_select_key_desc')}</div>
+        </div>
+        <div id="copy-key-container" class="treeclip-floating-card treeclip-shortcut-item">
+          <div class="treeclip-shortcut-label">${t('ui_copy_key')}</div>
+          <div id="copy-key-display" class="treeclip-shortcut-display">${escapeHtml(copyKeyConfig.keys.map(formatKeyForDisplay).join(' + '))}</div>
+          <div id="copy-key-conflict" class="treeclip-shortcut-conflict">${t('ui_conflict_warning')}</div>
+          <div class="treeclip-shortcut-description">${t('ui_copy_key_desc')}</div>
+        </div>
       </div>
-      <div style="font-size: 11px; opacity: 0.7;">${t('ui_select_key_desc')}</div>
-    </div>
-
-    <div style="margin-bottom: 10px;">
-      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">${t('ui_type_select_key')}</div>
-      <div id="type-select-key-container" style="background: rgba(255,255,255,0.1); padding: 6px; border-radius: 4px; margin-bottom: 3px;">
-        <div id="type-select-key-display" style="height: 22px; line-height: 22px; padding: 0 6px; background: rgba(255,255,255,0.2); border-radius: 3px; cursor: pointer; text-align: center;">${typeSelectKeyConfig.keys.map(formatKeyForDisplay).join(' + ')}</div>
-        <div id="type-select-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">${t('ui_conflict_warning')}</div>
+      <div class="treeclip-floating-card treeclip-shortcut-reference">
+        <div class="treeclip-guide-section-title">${t('shortcut_reference_title')}</div>
+        <div class="treeclip-guide-row"><span class="treeclip-guide-keys"><kbd class="treeclip-guide-key">Shift + ↑ / ↓</kbd></span><span class="treeclip-guide-description">${t('shortcut_hierarchy_desc')}</span></div>
+        <div class="treeclip-guide-row"><span class="treeclip-guide-keys"><kbd class="treeclip-guide-key">Shift + → / ←</kbd></span><span class="treeclip-guide-description">${t('shortcut_fields_desc')}</span></div>
+        <div class="treeclip-guide-row"><span class="treeclip-guide-keys"><kbd class="treeclip-guide-key">${t('shortcut_bind_label')}</kbd></span><span class="treeclip-guide-description">${t('guide_bind_level')}</span></div>
+        <div class="treeclip-guide-row"><span class="treeclip-guide-keys"><kbd class="treeclip-guide-key">${t('shortcut_switch_group_label')}</kbd></span><span class="treeclip-guide-description">${t('shortcut_switch_group_desc')}</span></div>
+        <div class="treeclip-guide-row"><span class="treeclip-guide-keys"><kbd class="treeclip-guide-key">${t('shortcut_remove_group_label')}</kbd></span><span class="treeclip-guide-description">${t('shortcut_remove_group_desc')}</span></div>
+        <div class="treeclip-guide-row"><span class="treeclip-guide-keys"><kbd class="treeclip-guide-key">Esc</kbd></span><span class="treeclip-guide-description">${t('shortcut_clear_desc')}</span></div>
       </div>
-      <div style="font-size: 11px; opacity: 0.7;">${t('ui_type_select_key_desc')}</div>
-    </div>
-
-    <div style="margin-bottom: 10px;">
-      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">${t('ui_copy_key')}</div>
-      <div id="copy-key-container" style="background: rgba(255,255,255,0.1); padding: 6px; border-radius: 4px; margin-bottom: 3px;">
-        <div id="copy-key-display" style="height: 22px; line-height: 22px; padding: 0 6px; background: rgba(255,255,255,0.2); border-radius: 3px; cursor: pointer; text-align: center;">${copyKeyConfig.keys.map(formatKeyForDisplay).join(' + ')}</div>
-        <div id="copy-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">${t('ui_conflict_warning')}</div>
-      </div>
-      <div style="font-size: 11px; opacity: 0.7;">${t('ui_copy_key_desc')}</div>
-    </div>
-
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
-      <span id="save-status-message" style="font-size: 11px; color: #8bc34a; opacity: 0; transition: opacity 0.3s ease-in-out;"></span>
-      <div style="display: flex; gap: 8px;">
-        <button id="reset-key-defaults" class="batch-selector-ui" style="padding: 4px 8px; background: #555; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">${t('ui_reset_defaults')}</button>
-        <button id="batch-selector-key-config-save" class="batch-selector-ui" style="padding: 4px 8px; background: #4285f4; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">${t('ui_save')}</button>
+      <div class="treeclip-shortcut-help">${t('shortcut_edit_help')}</div>
+      <div class="treeclip-floating-footer">
+        <span id="save-status-message" class="treeclip-floating-status"></span>
+        <div style="display: flex; gap: 7px;">
+          <button id="reset-key-defaults" class="batch-selector-ui treeclip-floating-button">${t('ui_reset_defaults')}</button>
+          <button id="batch-selector-key-config-save" class="batch-selector-ui treeclip-floating-button treeclip-floating-button-primary">${t('ui_save')}</button>
+        </div>
       </div>
     </div>
   `;
@@ -3945,7 +4855,7 @@ function showKeyConfigPanel() {
 // 设置快捷键配置面板的事件监听器
 function setupKeyConfigEvents() {
   // 添加点击面板外部关闭的功能
-  document.addEventListener('mousedown', function(event) {
+  keyConfigOutsideMouseDownHandler = function(event) {
     if (isShowingKeyConfig && !event.target.closest('#batch-selector-key-config')) {
       // 如果正在捕获按键，先结束捕获
       if (isCapturingKeys) {
@@ -3954,7 +4864,8 @@ function setupKeyConfigEvents() {
       // 然后关闭面板
       hideKeyConfigPanel();
     }
-  });
+  };
+  document.addEventListener('mousedown', keyConfigOutsideMouseDownHandler);
 
   // 顶部关闭按钮
   const closeButton = document.getElementById('batch-selector-key-config-close');
@@ -4153,16 +5064,6 @@ function setupKeyConfigEvents() {
       lastCaptureTarget = '';
     });
 
-    // 添加悬停效果
-    resetDefaultsButton.addEventListener('mouseover', function() {
-      this.style.transition = 'background-color 0.2s ease-in-out';
-      this.style.backgroundColor = '#666';
-    });
-
-    resetDefaultsButton.addEventListener('mouseout', function() {
-      this.style.transition = 'background-color 0.2s ease-in-out';
-      this.style.backgroundColor = '#555';
-    });
   }
 
   // 保存按钮
@@ -4206,16 +5107,6 @@ function setupKeyConfigEvents() {
       }
     });
 
-    // 添加悬停效果
-    saveButton.addEventListener('mouseover', function() {
-      this.style.transition = 'background-color 0.2s ease-in-out';
-      this.style.backgroundColor = '#5294f7';
-    });
-
-    saveButton.addEventListener('mouseout', function() {
-      this.style.transition = 'background-color 0.2s ease-in-out';
-      this.style.backgroundColor = '#4285f4';
-    });
   }
 
   // 初始检查冲突
@@ -4380,8 +5271,12 @@ function hideKeyConfigPanel() {
     document.body.removeChild(configPanel);
   }
 
+  if (keyConfigOutsideMouseDownHandler) {
+    document.removeEventListener('mousedown', keyConfigOutsideMouseDownHandler);
+    keyConfigOutsideMouseDownHandler = null;
+  }
+
   isShowingKeyConfig = false;
-  isKeyConfigExpanded = false;
 }
 
 // 在初始化时加载设置（在文件靠近底部添加调用）
@@ -4391,105 +5286,31 @@ loadUserSettings();
 // =============================================
 // UI交互增强 - 添加额外的交互功能
 // =============================================
-// 添加展开层级按钮的事件监听器
-function addExpandLevelsEvents(notification) {
-  const showMoreLevels = document.getElementById('show-more-levels');
-  if (showMoreLevels) {
-    // --- 使用克隆节点移除旧监听器 ---
-    const newShowMoreLevels = showMoreLevels.cloneNode(true);
-    showMoreLevels.parentNode.replaceChild(newShowMoreLevels, showMoreLevels);
-    // --- 绑定新监听器 ---
-    newShowMoreLevels.addEventListener('click', function(event) {
-      event.stopPropagation(); event.preventDefault();
-      isHierarchyExpanded = true;
-      // console.log('层级显示已展开');
-      updateNotification(selectedElements.length); // <--- 修改点
-    });
-    newShowMoreLevels.addEventListener('mouseover', function() { this.style.backgroundColor = 'rgba(255, 255, 255, 0.15)'; this.style.color = '#fff'; });
-    newShowMoreLevels.addEventListener('mouseout', function() { this.style.backgroundColor = 'rgba(255, 255, 255, 0.08)'; this.style.color = '#bbb'; });
-  }
-}
+// 切换中间层的完整显示，并把选择保存为用户偏好。
+function addHierarchyLevelsToggleEvents(notification) {
+  const toggle = notification.querySelector('#toggle-middle-levels');
+  if (!toggle) return;
 
-// 显示操作指南窗口
-function showGuide() {
-  // 查找或创建操作指南容器
-  let guideContainer = document.getElementById('batch-selector-guide-popup');
-
-  if (guideContainer) {
-    // 如果已存在，则切换显示状态
-    guideContainer.style.display = guideContainer.style.display === 'none' ? 'block' : 'none';
-    return;
-  }
-
-  // 创建新的操作指南弹窗
-  guideContainer = document.createElement('div');
-  guideContainer.id = 'batch-selector-guide-popup';
-  guideContainer.className = 'batch-selector-ui';
-  guideContainer.style.position = 'fixed';
-  guideContainer.style.left = '20px';
-  guideContainer.style.bottom = '80px';
-  guideContainer.style.background = 'rgba(0, 0, 0, 0.9)';
-  guideContainer.style.padding = '12px 15px';
-  guideContainer.style.borderRadius = '5px';
-  guideContainer.style.color = 'white';
-  guideContainer.style.zIndex = '10001';
-  guideContainer.style.boxShadow = '0 2px 10px rgba(0,0,0,0.5)';
-  guideContainer.style.maxWidth = '320px';
-  guideContainer.style.fontSize = '13px';
-  guideContainer.style.lineHeight = '1.5';
-
-  // 获取格式化的快捷键显示
-  const selectKeyDisplay = selectKeyConfig.keys.map(formatKeyForDisplay).join('+');
-  const typeSelectKeyDisplay = typeSelectKeyConfig.keys.map(formatKeyForDisplay).join('+');
-  const copyKeyDisplay = copyKeyConfig.keys.map(formatKeyForDisplay).join('+');
-
-  // 操作指南内容
-  guideContainer.innerHTML = `
-    <div style="margin-bottom: 8px; font-weight: bold; display: flex; justify-content: space-between; align-items: center;">
-      <span>快捷操作指南</span>
-      <span id="close-guide" style="cursor: pointer; font-size: 16px;">×</span>
-    </div>
-    <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);">
-      <div><b>${selectKeyDisplay}+点击</b>: 选择/取消选择元素</div>
-      <div><b>${selectKeyDisplay}+拖拽</b>: 绘制矩形框进行框选</div>
-      <div><b>${typeSelectKeyDisplay}</b>: 选择所有相同类型元素</div>
-      <div><b>Shift+点击类型标签</b>: 取消选择整个类型的元素</div>
-    </div>
-    <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);">
-      <div><b>Shift+↑/↓</b>: 在层级间导航</div>
-      <div><b>Shift+→/←</b>: 进/出内部元素</div>
-      <div><b>Shift+层级</b>: 层级绑定，将后续选择范围精确限定在该父层级下。</div>
-    </div>
-    <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);">
-      <div><b>Esc</b>: 取消选择</div>
-      <div><b>${copyKeyDisplay}</b>: 快速复制所选内容</div>
-    </div>
-    <div style="margin-bottom: 6px; font-weight: bold;">文本搜索语法:</div>
-    <div style="padding-left: 8px; font-size: 12px; line-height: 1.5; color: #ddd;">
-      <div><code style="background: rgba(255,255,255,0.1); padding: 0 3px;">*</code> - 匹配任意数量字符 (例: <code style="background: rgba(255,255,255,0.1); padding: 0 3px;">数据*分析</code>)</div>
-      <div><code style="background: rgba(255,255,255,0.1); padding: 0 3px;">?</code> - 匹配单个字符 (例: <code style="background: rgba(255,255,255,0.1); padding: 0 3px;">第?章</code>)</div>
-      <div><code style="background: rgba(255,255,255,0.1); padding: 0 3px;">[a,b,c]</code> - 匹配括号内任一项 (例: <code style="background: rgba(255,255,255,0.1); padding: 0 3px;">[1,2,3]</code>)</div>
-      <div><code style="background: rgba(255,255,255,0.1); padding: 0 3px;">"..."</code> - 引号内按字面匹配 (例: <code style="background: rgba(255,255,255,0.1); padding: 0 3px;">"[1,2]"</code>)</div>
-    </div>
-  `;
-
-  document.body.appendChild(guideContainer);
-
-  // 添加关闭按钮事件
-  document.getElementById('close-guide').addEventListener('click', function() {
-    guideContainer.style.display = 'none';
+  toggle.addEventListener('click', function(event) {
+    event.stopPropagation();
+    event.preventDefault();
+    isHierarchyExpanded = !isHierarchyExpanded;
+    try {
+      chrome.storage.local.set({ 'batch-selector-hierarchy-expanded': isHierarchyExpanded });
+    } catch (e) {
+      /* 页面关闭时可能无法写入扩展存储；当前会话状态仍然有效。 */
+    }
+    updateNotification(selectedElements.length);
   });
 
-  // 点击其他区域关闭指南
-  document.addEventListener('click', function(e) {
-    if (guideContainer && guideContainer.style.display !== 'none') {
-      if (!guideContainer.contains(e.target) &&
-          e.target.id !== 'batch-selector-guide' &&
-          !e.target.closest('#batch-selector-guide')) {
-        guideContainer.style.display = 'none';
-      }
-    }
-  }, true);
+  toggle.addEventListener('mouseover', function() {
+    this.style.backgroundColor = 'rgba(255, 255, 255, 0.15)';
+    this.style.color = '#fff';
+  });
+  toggle.addEventListener('mouseout', function() {
+    this.style.backgroundColor = 'rgba(255, 255, 255, 0.08)';
+    this.style.color = '#bbb';
+  });
 }
 
 // =============================================
@@ -4510,861 +5331,13 @@ function switchToLevelInside(index) {
 
 // 新增函数：在查看内部模式下执行层级匹配 (现在调用统一的updateNotification)
 function selectByHierarchyInside(levelIndex) {
-  if (levelIndex < 0 || levelIndex >= parentChain.length) {
-    return;
-  }
-
-  // 检查是否尝试绑定高层级（低索引）到低层级（高索引）
-  if (levelIndex < parentChainIndex) {
-    // 显示无法绑定的提示，但不中断操作
-    showTemporaryMessage('无法绑定高层级到低层级元素');
-    return;
-  }
-
-  // 获取当前元素类型
-  const currentElement = parentChain[parentChainIndex];
-  const currentTagName = currentElement.tagName.toLowerCase();
-  const currentClassName = currentElement.className || '';
-
-  // 获取目标层级元素
-  const targetElement = parentChain[levelIndex];
-  const targetTagName = targetElement.tagName.toLowerCase();
-  const targetClassName = targetElement.className || '';
-
-  // 保存当前选中的元素，以便后续恢复
-  const currentSelectedElements = [...selectedElements];
-
-  // 获取当前选中的该类型元素
-  let currentTypeElements = [];
-  if (currentElementTypeKey) {
-    const [tagName, className] = currentElementTypeKey.split('.');
-    currentTypeElements = selectedElements.filter(el =>
-      el.tagName.toLowerCase() === tagName &&
-      (el.className || '') === className
-    );
-  }
-
-  // 寻找页面上所有符合当前元素类型的元素
-  const potentialElements = document.querySelectorAll(currentTagName);
-  const matchedElements = [];
-
-  // 对每个潜在元素检查其层级
-  for (const element of potentialElements) {
-    // 如果元素类名不匹配，跳过
-    if ((element.className || '') !== currentClassName) {
-      continue;
-    }
-
-    // 收集元素的父元素链
-    const elementChain = [];
-    let current = element;
-
-    while (current && current !== document.body) {
-      elementChain.unshift(current); // 从上到下添加
-      current = current.parentElement;
-    }
-
-    // 添加body作为最顶层
-    if (current === document.body) {
-      elementChain.unshift(current);
-    }
-
-    // 检查是否存在目标层级匹配
-    let hasMatchingHierarchy = false;
-
-    // 遍历元素链，查找是否有匹配的目标层级
-    for (let i = 0; i < elementChain.length; i++) {
-      const hierarchyElement = elementChain[i];
-
-      if (hierarchyElement.tagName.toLowerCase() === targetTagName &&
-          (hierarchyElement.className || '') === targetClassName) {
-        // 如果找到匹配的目标层级，检查相对位置关系是否与参考链一致
-        if (i < elementChain.length - 1 &&
-            elementChain[elementChain.length - 1].tagName.toLowerCase() === currentTagName &&
-            (elementChain[elementChain.length - 1].className || '') === currentClassName) {
-          hasMatchingHierarchy = true;
-          break;
-        }
-      }
-    }
-
-    // 如果找到了匹配的层级关系，添加到结果中
-    if (hasMatchingHierarchy) {
-      matchedElements.push(element);
-    }
-  }
-
-  // 检查是否是当前层级
-  const isCurrentLevel = levelIndex === parentChainIndex;
-
-  // 只有在不是当前层级时，才清除当前元素类型的高亮
-  if (currentElementTypeKey && !isCurrentLevel) {
-    const [tagName, className] = currentElementTypeKey.split('.');
-    selectedElements.forEach(el => {
-      if (el.tagName.toLowerCase() === tagName &&
-          (el.className || '') === className) {
-        el.style.outline = '';
-      }
-    });
-
-    // 从选中列表中移除当前类型的元素
-    selectedElements = selectedElements.filter(el =>
-      !(el.tagName.toLowerCase() === tagName &&
-        (el.className || '') === className)
-    );
-  }
-
-  // 如果是当前层级，只添加新的匹配元素
-  if (isCurrentLevel) {
-    // 检查这些元素是否已经在选中列表中
-    const newElements = matchedElements.filter(el => !selectedElements.includes(el));
-
-    // 高亮新的匹配元素并添加到选中列表
-    newElements.forEach(el => {
-      el.style.outline = '2px solid blue';
-      selectedElements.push(el);
-    });
-  } else {
-    // 不是当前层级，添加所有匹配元素
-    matchedElements.forEach(el => {
-      el.style.outline = '2px solid blue';
-      selectedElements.push(el);
-    });
-  }
-
-  // 更新当前元素类型
-  currentElementTypeKey = `${currentTagName}.${currentClassName}`;
-
-  // 更新匹配层级索引，用于高亮
-  // 使用元素类型关联的匹配层级索引
-  matchedLevelIndices[currentElementTypeKey] = levelIndex;
-
-  // 保持在查看内部模式，刷新界面以显示高亮
-  updateNotification(selectedElements.length);
-
-  // 更新剪贴板
-  updateClipboard();
+  selectByHierarchy(levelIndex);
 }
 
 // 新增函数：在查看内部模式下取消层级匹配 (现在调用统一的updateNotification)
 function cancelHierarchyMatchInside() {
-  // 如果没有当前元素类型的匹配层级，不执行任何操作
-  if (!matchedLevelIndices[currentElementTypeKey]) {
-    return;
-  }
-
-  // 检查当前选中元素是否仍然有效（可能已被删除）
-  // 过滤掉已经不在DOM中的元素
-  selectedElements = selectedElements.filter(el => document.body.contains(el));
-
-  // 如果过滤后没有元素了，清空选择并返回
+  cancelHierarchyMatch();
   if (selectedElements.length === 0) {
-    currentElementTypeKey = '';
-    parentChain = [];
-    parentChainIndex = 0;
-    childrenChain = [];
-    delete matchedLevelIndices[currentElementTypeKey];
-    isViewingChildren = false; // 退出查看内部模式
-    return;
-  }
-
-  // 获取当前匹配的层级
-  const matchedLevel = matchedLevelIndices[currentElementTypeKey];
-
-  // 重置当前元素类型的匹配层级索引
-  delete matchedLevelIndices[currentElementTypeKey];
-
-  // 如果当前元素类型存在，检查选中元素
-  if (currentElementTypeKey) {
-    const [tagName, className] = currentElementTypeKey.split('.');
-
-    // 获取当前选中的该类型元素
-    const currentTypeElements = selectedElements.filter(el =>
-      el.tagName.toLowerCase() === tagName &&
-      (el.className || '') === className
-    );
-
-    // 无论是否有选中的元素，都重新选择所有匹配当前元素类型的元素（不考虑层级）
-    // 清除当前类型元素的高亮
-    currentTypeElements.forEach(el => {
-      el.style.outline = '';
-    });
-
-    // 从选中列表中移除当前类型的元素
-    selectedElements = selectedElements.filter(el =>
-      !(el.tagName.toLowerCase() === tagName &&
-        (el.className || '') === className)
-    );
-
-    // 重新选择所有匹配当前元素类型的元素
-    const allMatchingElements = document.querySelectorAll(tagName);
-    const filteredElements = Array.from(allMatchingElements).filter(el =>
-      (el.className || '') === className
-    );
-
-    // 高亮所有匹配元素
-    filteredElements.forEach(el => {
-      el.style.outline = '2px solid blue';
-      selectedElements.push(el);
-    });
-
-    // 更新UI
-    updateNotification(selectedElements.length);
-
-    // 更新剪贴板
-    updateClipboard();
-  } else {
-    // 如果没有当前元素类型，只更新UI
-    updateNotification(selectedElements.length);
-  }
-}
-
-// =============================================
-// 文本搜索功能实现
-// =============================================
-
-// 查找距离节点最近的有意义的父元素
-function findClosestSignificantElement(node) {
-  let current = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-  while (current && current !== document.body) {
-    if (isSignificantElement(current)) {
-      return current;
-    }
-    current = current.parentElement;
-  }
-  // 如果找不到，返回父节点或者body
-  return node.parentElement || document.body;
-}
-
-// 新增：查找最近的可见祖先元素
-function findClosestVisibleAncestor(element) {
-  let current = element;
-  while (current && current !== document.body) {
-    if (!isElementHiddenOrDisabled(current)) {
-      // 找到了第一个可见的祖先
-      return current;
-    }
-    current = current.parentElement;
-  }
-  // 如果一直到 body 都没找到可见的（理论上 body 总是可见），则返回 body
-  return document.body;
-}
-
-// 将通配符模式转换为正则表达式
-function wildcardToRegex(pattern) {
-  // 处理引号中的特殊字符
-  let processedPattern = '';
-  let inQuotes = false;
-  let i = 0;
-
-  // 检查模式是否完全被引号包围
-  const isCompletelyQuoted = pattern.startsWith('"') && pattern.endsWith('"') && pattern.length >= 2;
-
-  // 如果模式完全被引号包围，则直接按字面值处理内部内容
-  if (isCompletelyQuoted && pattern.length > 2) {
-    // 去掉首尾引号，并对特殊字符进行转义
-    const innerContent = pattern.substring(1, pattern.length - 1);
-    return new RegExp(innerContent.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi');
-  }
-
-  while (i < pattern.length) {
-    // 处理引号
-    if (pattern[i] === '"' && (i === 0 || pattern[i-1] !== '\\')) {
-      inQuotes = !inQuotes;
-      // 引号本身不输出到结果中
-      i++;
-      continue;
-    }
-
-    if (inQuotes) {
-      // 在引号内，将特殊字符转义
-      if (pattern[i] === '*' || pattern[i] === '?' || pattern[i] === '[' || pattern[i] === ']') {
-        processedPattern += '\\' + pattern[i];
-      } else {
-        processedPattern += pattern[i];
-      }
-    } else {
-      // 引号外的字符，正常处理
-      processedPattern += pattern[i];
-    }
-    i++;
-  }
-
-  // 处理字符集合 [1,2,3,10]
-  processedPattern = processedPattern.replace(/\[([^\]]+)\]/g, function(match, contents) {
-    // 将逗号分隔的内容转为正则表达式的分组
-    const items = contents.split(',').map(item => item.trim());
-
-    // 检查是否有多字符项
-    const hasMultiCharItems = items.some(item => item.length > 1);
-
-    if (hasMultiCharItems) {
-      // 使用分组语法 (item1|item2|item3)
-      return '(' + items.map(item => {
-        // 转义正则表达式特殊字符
-        return item.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-      }).join('|') + ')';
-    } else {
-      // 使用字符类语法 [item1item2item3]
-      return '[' + items.map(item => {
-        // 转义正则表达式特殊字符
-        return item.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-      }).join('') + ']';
-    }
-  });
-
-  // 1. 转义正则表达式特殊字符，除了 * 和 ?
-  const escapedPattern = processedPattern.replace(/(-|\/|\\|\^|\$|\+|\.|\\|\(|\)|\||\{|\})/g, '\\$1');
-
-  // 2. 将非转义的 * 替换为 .*
-  const starReplaced = escapedPattern.replace(/(?<!\\)\*/g, '.*');
-
-  // 3. 将非转义的 ? 替换为 .
-  const finalPattern = starReplaced.replace(/(?<!\\)\?/g, '.');
-
-  // 4. 创建正则表达式对象，忽略大小写
-  try {
-    return new RegExp(finalPattern, 'gi'); // g: 全局匹配, i: 忽略大小写
-  } catch (e) {
-    console.error("创建正则表达式失败:", e, "模式:", finalPattern);
-    // 如果模式无效，返回一个匹配原始文本的正则
-    try {
-      // 尝试创建一个仅匹配原始文本的正则
-      return new RegExp(pattern.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi');
-    } catch (e2) {
-      console.error("创建回退正则表达式也失败:", e2);
-      // 最终回退到匹配任何内容
-      return new RegExp('.*', 'gi');
-    }
-  }
-}
-
-// 执行文本搜索（包含属性搜索）
-function executeSearch() {
-  const inputElement = document.getElementById('batch-selector-search-input');
-  searchTerm = inputElement ? inputElement.value.trim() : '';
-
-  // 清除上一次的搜索高亮和结果
-  removeSearchHighlight();
-  searchResults = [];
-  currentSearchResultIndex = -1;
-
-  if (!searchTerm) {
-    updateSearchResultUI(); // 更新UI显示无结果
-    showTemporaryMessage("请输入搜索文本或模式");
-    return;
-  }
-
-  // console.log(`开始搜索模式: \"${searchTerm}\"`);
-  // 使用通配符转正则表达式
-  const searchRegex = wildcardToRegex(searchTerm);
-
-  // 添加检查确保 document.body 可用
-  if (!document.body || !(document.body instanceof Node)) {
-    console.error("TreeClip Error: document.body is not available or not a Node when trying to search.");
-    showTemporaryMessage("搜索失败：页面结构异常");
-    updateSearchResultUI(); // 更新UI显示无结果或错误状态
-    return;
-  }
-
-  // --- 1. 搜索文本节点 ---
-  // console.log("--- 开始搜索文本节点 ---");
-  const walker = document.createTreeWalker(
-    document.body,
-    NodeFilter.SHOW_TEXT,
-    {
-      acceptNode: function(node) {
-        // 排除脚本、样式、UI内部的文本节点
-        const parent = node.parentElement;
-        if (!parent || parent.closest('script, style, .batch-selector-ui')) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        // 使用正则表达式测试文本内容
-        // 需要重置正则表达式的lastIndex，因为同一个 regex 对象会被多次使用
-        searchRegex.lastIndex = 0;
-        if (searchRegex.test(node.nodeValue)) {
-          return NodeFilter.FILTER_ACCEPT;
-        }
-        return NodeFilter.FILTER_SKIP;
-      }
-    },
-    false
-  );
-
-  let textNode;
-  while (textNode = walker.nextNode()) {
-    const parentElement = textNode.parentElement;
-    if (!parentElement) continue; // 以防万一文本节点没有父元素
-
-    const isHidden = isElementHiddenOrDisabled(parentElement);
-    let result = null;
-
-    if (isHidden) {
-      // --- 处理隐藏文本匹配 ---
-      const visibleAncestor = findClosestVisibleAncestor(parentElement);
-      result = {
-          type: 'hiddenText',
-          textNode: textNode,           // 原始文本节点
-          parentElement: parentElement, // 直接父元素（隐藏的）
-          visibleAncestor: visibleAncestor // 最近的可见祖先
-      };
-      // console.log(`  [隐藏文本匹配] 找到: "${textNode.nodeValue.trim().substring(0, 50)}..." (父元素隐藏)`, "节点:", textNode, "可见祖先:", visibleAncestor);
-
-    } else {
-      // --- 处理可见文本匹配 ---
-      result = {
-          type: 'text',
-          textNode: textNode,
-          parentElement: parentElement, // 存储直接父元素用于上下文
-          highlightSpans: []
-      };
-       // console.log(`  [可见文本匹配] 找到: "${textNode.nodeValue.trim().substring(0, 50)}..."`, "节点:", textNode, "父元素:", parentElement);
-    }
-
-    // 将结果添加到列表
-    searchResults.push(result);
-  }
-  // console.log("--- 文本节点搜索结束 ---");
-
-  // console.log(`搜索完成，总共找到 ${searchResults.length} 个原始匹配结果.`);
-
-  if (searchResults.length > 0) {
-    currentSearchResultIndex = 0; // 定位到第一个结果
-    // 将正则表达式传递给高亮函数
-    highlightSearchResults(searchRegex);
-    jumpToSearchResult(currentSearchResultIndex, true); // 跳转并滚动到第一个
-  } else {
-    showTemporaryMessage(`未找到匹配 "${searchTerm}" 的文本`);
-  }
-  updateSearchResultUI();
-}
-
-// 高亮所有搜索结果
-function highlightSearchResults(searchRegex) {
-  if (!searchRegex) return; // 如果没有有效的正则表达式，则退出
-
-  // 重置正则表达式状态，以防万一
-  searchRegex.lastIndex = 0;
-
-  // console.log("--- 开始高亮搜索结果 ---");
-  searchResults.forEach((result, index) => {
-    if (result.type === 'text') {
-      // --- 处理可见文本节点高亮 ---
-      const { textNode } = result;
-      const parent = textNode.parentNode;
-      if (!parent || !document.body.contains(textNode)) {
-        // console.log(`  跳过高亮: 文本节点或其父元素已不存在`, textNode);
-        return;
-      }
-
-      const text = textNode.nodeValue;
-      const fragments = [];
-      result.highlightSpans = []; // 重置/初始化高亮span数组
-      let lastIndex = 0;
-      let match;
-
-      // 使用 exec 循环查找所有匹配项
-      searchRegex.lastIndex = 0; // 确保从头开始搜索
-      while ((match = searchRegex.exec(text)) !== null) {
-        // 添加匹配前的文本
-        if (match.index > lastIndex) {
-          fragments.push(document.createTextNode(text.substring(lastIndex, match.index)));
-        }
-
-        // 只有当匹配到非空文本时才创建高亮span
-        if (match[0].length > 0) {
-          // 创建高亮 span
-        const highlightSpan = document.createElement('span');
-        highlightSpan.className = 'batch-selector-text-highlight';
-          highlightSpan.textContent = match[0]; // match[0] 是匹配到的文本
-          // 标记当前结果的第一个匹配项
-        if (index === currentSearchResultIndex && result.highlightSpans.length === 0) {
-          highlightSpan.classList.add('batch-selector-text-highlight-current');
-        }
-        fragments.push(highlightSpan);
-        result.highlightSpans.push(highlightSpan);
-        }
-
-        lastIndex = match.index + match[0].length;
-
-        // 如果正则表达式可能匹配空字符串，需要手动推进 lastIndex 防止死循环
-        if (match[0].length === 0) {
-          searchRegex.lastIndex++;
-        }
-      }
-
-      // 添加最后一个匹配项之后的文本
-      if (lastIndex < text.length) {
-        fragments.push(document.createTextNode(text.substring(lastIndex)));
-      }
-
-      // 如果找到了匹配项，替换原始文本节点
-      if (fragments.length > 0 && result.highlightSpans.length > 0) {
-        // console.log(`  [高亮文本] "${text.trim().substring(0,50)}..."`, textNode);
-        const nextSibling = textNode.nextSibling;
-        try {
-          // 确保 textNode 仍然是 parent 的子节点
-          if (parent.contains(textNode)) {
-          parent.removeChild(textNode);
-          } else {
-            // console.warn("  文本节点已不在父节点下，跳过移除");
-            return; // 如果节点已被移除，后续插入也无意义
-          }
-  } catch (e) {
-          console.error("  移除原始文本节点失败:", e, textNode);
-          return;
-        }
-        // 插入新的片段
-        fragments.forEach(fragment => {
-          try {
-          parent.insertBefore(fragment, nextSibling);
-          } catch (e) {
-            console.error("  插入高亮片段失败:", e, fragment);
-          }
-        });
-      }
-    } else if (result.type === 'hiddenText') {
-        // --- 处理隐藏文本匹配的高亮 ---
-      const { visibleAncestor, textNode, parentElement } = result;
-
-        // 1. 高亮可见祖先 (橙色框)
-        if (visibleAncestor && document.body.contains(visibleAncestor)) {
-            visibleAncestor.classList.add('batch-selector-attribute-highlight');
-            if (index === currentSearchResultIndex) {
-              visibleAncestor.classList.add('batch-selector-text-highlight-current');
-            }
-             // console.log(`  [高亮隐藏文本祖先] 为 "${textNode.nodeValue.trim().substring(0,50)}..." 高亮 <${visibleAncestor.tagName}>`, visibleAncestor);
-        } else {
-            // console.log(`  跳过祖先高亮: 隐藏文本的可见祖先不存在或已移除`, visibleAncestor);
-        }
-
-        // 2. 高亮隐藏文本自身 (黄色背景 span)，即使父元素隐藏
-      if (parentElement && document.body.contains(textNode) && parentElement.contains(textNode)) { // 检查父元素和文本节点是否存在且有父子关系
-            const text = textNode.nodeValue;
-            const fragments = [];
-            result.highlightSpans = []; // 存储创建的 spans
-        let lastIndex = 0;
-        let match;
-
-        searchRegex.lastIndex = 0; // 重置正则状态
-        while ((match = searchRegex.exec(text)) !== null) {
-          if (match.index > lastIndex) {
-            fragments.push(document.createTextNode(text.substring(lastIndex, match.index)));
-          }
-
-          // 只有当匹配到非空文本时才创建高亮span
-          if (match[0].length > 0) {
-              const highlightSpan = document.createElement('span');
-            highlightSpan.className = 'batch-selector-text-highlight';
-            highlightSpan.textContent = match[0];
-              // 注意：这里的 current 高亮状态由祖先元素处理，span 本身不需要 current 类
-              fragments.push(highlightSpan);
-              result.highlightSpans.push(highlightSpan);
-          }
-
-          lastIndex = match.index + match[0].length;
-          if (match[0].length === 0) {
-            searchRegex.lastIndex++;
-          }
-        }
-
-        if (lastIndex < text.length) {
-          fragments.push(document.createTextNode(text.substring(lastIndex)));
-        }
-
-        // 如果找到了匹配项，替换原始文本节点
-        if (fragments.length > 0 && result.highlightSpans.length > 0) {
-              const nextSibling = textNode.nextSibling;
-              try {
-            // 确保 textNode 仍然是 parent 的子节点
-            if (parentElement.contains(textNode)) {
-                     parentElement.removeChild(textNode);
-                 } else {
-              // console.warn("  隐藏文本节点已不在父节点下，跳过移除");
-              return; // 如果节点已被移除，后续插入也无意义
-                 }
-              } catch (e) {
-            console.error("  移除原始隐藏文本节点失败:", e, textNode);
-            return;
-          }
-          // 插入新的片段
-          fragments.forEach(fragment => {
-            try {
-              parentElement.insertBefore(fragment, nextSibling);
-            } catch (e) {
-              console.error("  插入隐藏文本高亮片段失败:", e, fragment);
-            }
-          });
-        }
-        }
-    }
-  });
-
-  // console.log("--- 高亮搜索结果完成 ---");
-}
-
-// 移除所有搜索高亮
-function removeSearchHighlight() {
-  // console.log("--- 开始移除搜索高亮 ---");
-  // 1. 移除文本高亮 spans
-  const highlightedSpans = document.querySelectorAll('.batch-selector-text-highlight, .batch-selector-text-highlight-current');
-  // console.log(`  发现 ${highlightedSpans.length} 个文本高亮span`);
-  highlightedSpans.forEach(span => {
-    const parent = span.parentNode;
-    if (parent) {
-      // 检查 span 是否还在父节点下 (防止重复移除或DOM变化)
-      if (Array.from(parent.childNodes).includes(span)) {
-         try {
-           parent.replaceChild(document.createTextNode(span.textContent), span);
-           parent.normalize(); // 合并相邻文本节点
-         } catch (e) {
-           // console.error("  替换span时出错:", e, span);
-         }
-      }
-    }
-  });
-
-  // 2. 移除属性高亮 class (对于隐藏文本)
-  const highlightedElements = document.querySelectorAll('.batch-selector-attribute-highlight, .batch-selector-text-highlight-current');
-  // console.log(`  发现 ${highlightedElements.length} 个带有高亮的元素`);
-  highlightedElements.forEach(el => {
-    el.classList.remove('batch-selector-attribute-highlight');
-    el.classList.remove('batch-selector-text-highlight-current');
-  });
-
-  // console.log("已清除文本高亮");
-  // 清空之前存储的span引用，以防内存泄漏
-  searchResults.forEach(result => {
-    if(result.type === 'text') { result.highlightSpans = []; }
-  });
-  // console.log("--- 结束移除搜索高亮 ---");
-}
-
-// 更新搜索结果导航UI
-function updateSearchResultUI() {
-  const countElement = document.getElementById('batch-selector-search-count');
-  const prevButton = document.getElementById('batch-selector-search-prev');
-  const nextButton = document.getElementById('batch-selector-search-next');
-  const addAllButton = document.getElementById('batch-selector-search-add-all');
-
-  if (!countElement || !prevButton || !nextButton || !addAllButton) return;
-
-  if (searchResults.length === 0) {
-    countElement.textContent = t('ui_no_results');
-    prevButton.disabled = true;
-    nextButton.disabled = true;
-    addAllButton.disabled = true;
-  } else {
-    countElement.textContent = t('ui_search_result_count', [currentSearchResultIndex + 1, searchResults.length]);
-    prevButton.disabled = currentSearchResultIndex <= 0;
-    nextButton.disabled = currentSearchResultIndex >= searchResults.length - 1;
-    addAllButton.disabled = false;
-  }
-}
-
-// 跳转到下一个搜索结果
-function jumpToNextSearchResult() {
-  if (searchResults.length === 0 || currentSearchResultIndex >= searchResults.length - 1) return;
-
-  // 移除旧的当前高亮
-  if (currentSearchResultIndex >= 0) {
-      const prevResult = searchResults[currentSearchResultIndex];
-      if (prevResult.type === 'text') {
-          // 检查 highlightSpans 是否存在且有内容
-          if (prevResult.highlightSpans && prevResult.highlightSpans.length > 0) {
-             prevResult.highlightSpans.forEach(span => span.classList.remove('batch-selector-text-highlight-current'));
-          }
-      } else if (prevResult.type === 'hiddenText') {
-          const element = prevResult.visibleAncestor;
-          if (element) {
-             element.classList.remove('batch-selector-text-highlight-current');
-          }
-      }
-  }
-
-  currentSearchResultIndex++;
-  const nextResult = searchResults[currentSearchResultIndex];
-
-  // 添加新的当前高亮并跳转
-   if (nextResult.type === 'text') {
-      // 检查 highlightSpans 是否存在
-      if (nextResult.highlightSpans && nextResult.highlightSpans.length > 0) {
-          nextResult.highlightSpans.forEach(span => span.classList.add('batch-selector-text-highlight-current'));
-      }
-      // 总是尝试跳转
-      jumpToSearchResult(currentSearchResultIndex, true);
-  } else if (nextResult.type === 'hiddenText') {
-      const element = nextResult.visibleAncestor;
-       if (element) {
-           element.classList.add('batch-selector-text-highlight-current');
-           jumpToSearchResult(currentSearchResultIndex, true);
-       }
-  }
-
-  updateSearchResultUI();
-}
-
-// 跳转到上一个搜索结果
-function jumpToPreviousSearchResult() {
-    if (currentSearchResultIndex <= 0) return;
-
-    // 移除旧的当前高亮
-    if (currentSearchResultIndex >= 0 && currentSearchResultIndex < searchResults.length) {
-        const currentResult = searchResults[currentSearchResultIndex];
-        if (currentResult.type === 'text') {
-            // 检查 highlightSpans 是否存在
-            if (currentResult.highlightSpans && currentResult.highlightSpans.length > 0) {
-               currentResult.highlightSpans.forEach(span => span.classList.remove('batch-selector-text-highlight-current'));
-            }
-        } else if (currentResult.type === 'hiddenText') {
-            const element = currentResult.visibleAncestor;
-            if (element) {
-               element.classList.remove('batch-selector-text-highlight-current');
-            }
-        }
-    }
-
-    currentSearchResultIndex--;
-    const prevResult = searchResults[currentSearchResultIndex];
-
-    // 添加新的当前高亮并跳转
-    if (prevResult.type === 'text') {
-        // 检查 highlightSpans 是否存在
-        if (prevResult.highlightSpans && prevResult.highlightSpans.length > 0) {
-            prevResult.highlightSpans.forEach(span => span.classList.add('batch-selector-text-highlight-current'));
-        }
-        jumpToSearchResult(currentSearchResultIndex, true);
-    } else if (prevResult.type === 'hiddenText') {
-        const element = prevResult.visibleAncestor;
-         if (element) {
-             element.classList.add('batch-selector-text-highlight-current');
-             jumpToSearchResult(currentSearchResultIndex, true);
-         }
-    }
-
-    updateSearchResultUI();
-}
-
-// 跳转到指定索引的搜索结果
-function jumpToSearchResult(index, shouldScroll = false) { // 添加滚动控制参数
-  if (index < 0 || index >= searchResults.length) return;
-
-  const result = searchResults[index];
-  let targetElementForScroll = null;
-
-  // console.log(`--- 跳转到结果 ${index + 1} (类型: ${result.type}) ---`);
-
-  if (result.type === 'text') {
-    // --- 文本结果跳转逻辑 ---
-    // 优先滚动到第一个高亮span
-    if (result.highlightSpans && result.highlightSpans.length > 0) {
-      targetElementForScroll = result.highlightSpans[0];
-      // console.log("  目标: 第一个高亮 span", targetElementForScroll);
-    } else if (result.containerElement) { // 否则尝试滚动到容器元素
-      targetElementForScroll = result.containerElement;
-      // console.log("  目标: 容器元素 (无高亮span)", targetElementForScroll);
-    } else {
-        // console.log("  无法确定文本结果的滚动目标");
-    }
-  } else if (result.type === 'hiddenText') {
-    // --- 隐藏文本结果跳转逻辑 ---
-    if (result.visibleAncestor && document.body.contains(result.visibleAncestor)) {
-        targetElementForScroll = result.visibleAncestor;
-        // console.log(`  目标: 隐藏文本的可见祖先 <${targetElementForScroll.tagName}>`, targetElementForScroll);
-    } else {
-        // console.log("  隐藏文本的可见祖先不存在或已移除");
-    }
-  }
-
-  // // 添加日志 (旧日志，已整合到上方)
-  // console.log(`jumpToSearchResult: index=${index}, shouldScroll=${shouldScroll}, target=`, targetElementForScroll);
-
-  if (targetElementForScroll && shouldScroll) {
-    requestAnimationFrame(() => { // 使用 requestAnimationFrame
-        try {
-             targetElementForScroll.scrollIntoView({ behavior: 'smooth', block: 'center' });
-             // console.log(`滚动到搜索结果 ${index + 1} (元素: ${targetElementForScroll.tagName})`);
-         } catch (e) {
-             // console.error("scrollIntoView 失败:", e, "目标元素:", targetElementForScroll);
-          }
-     });
-  }
-}
-
-// 将所有搜索结果添加到选择
-function addAllSearchResultsToSelection() {
-  if (searchResults.length === 0) return;
-
-  // console.log("--- 开始将所有搜索结果添加到选择 ---");
-  let addedCount = 0;
-  // 使用此 Set 进行最终添加到 selectedElements 的去重
-  const finalElementsToAdd = new Set();
-
-  searchResults.forEach((result, i) => {
-    // console.log(`  处理结果 ${i+1}/${searchResults.length}: 类型=${result.type}`);
-    let elementToAdd = null;
-    let initialElement = null;
-
-    if (result.type === 'text') {
-        // --- 文本结果处理 ---
-        initialElement = result.parentElement;
-    } else if (result.type === 'hiddenText') {
-        // --- 隐藏文本结果处理 ---
-        // 改为使用直接父元素作为初始候选，而不是可见祖先
-        initialElement = result.parentElement;
-    }
-
-    // 优先选择 initialElement，如果它有效
-    // 修改：移除对 offsetWidth/offsetHeight 的检查，优先选择直接父元素，即使它隐藏
-    if (initialElement && initialElement !== document.body) {
-        elementToAdd = initialElement;
-        // console.log(`    使用 initialElement: <${elementToAdd.tagName}>`, elementToAdd);
-    } else {
-        // 如果 initialElement 无效或不合适，则向上查找
-        // console.log(`    initialElement无效 (<${initialElement?.tagName}>)，向上查找...`);
-        elementToAdd = findClosestSignificantElement(initialElement);
-        if (elementToAdd) {
-             // console.log(`    [回退查找] 找到最近显著元素: <${elementToAdd.tagName}>`, elementToAdd);
-        } else {
-             // console.log(`    [回退查找] 未找到显著元素`);
-        }
-    }
-
-    // 添加到最终 Set 进行去重，并检查是否已在当前选择中
-    if (elementToAdd) {
-        if (selectedElements.includes(elementToAdd)) {
-             // console.log(`    跳过添加: 元素 <${elementToAdd.tagName}> 已在当前选择中`, elementToAdd);
-        } else if (finalElementsToAdd.has(elementToAdd)){
-             // console.log(`    跳过添加: 元素 <${elementToAdd.tagName}> 已在本轮待添加列表`, elementToAdd);
-        } else {
-             // console.log(`    添加到待选列表: <${elementToAdd.tagName}>`, elementToAdd);
-             finalElementsToAdd.add(elementToAdd);
-        }
-    }
-  });
-
-  // 将 Set 中的元素添加到 selectedElements 并应用高亮
-  finalElementsToAdd.forEach(el => {
-      selectedElements.push(el);
-      el.style.outline = '2px solid blue'; // 应用标准选择高亮
-      addedCount++;
-  });
-  // console.log(`--- 添加完成，新增 ${addedCount} 个元素到选择列表 (总计 ${selectedElements.length}) ---`);
-
-  // 清除搜索状态和高亮
-  // searchTerm = ''; // 保留搜索词
-  // removeSearchHighlight(); // 保留高亮
-  // searchResults = []; // 保留搜索结果
-  // currentSearchResultIndex = -1; // 保留当前索引
-
-  // 更新UI
-  updateNotification(selectedElements.length); // 更新主UI计数
-  updateClipboard();
-  updateSearchResultUI(); // 更新搜索导航UI状态（按钮等）
-
-  if (addedCount > 0) {
-    showTemporaryMessage(`已将 ${addedCount} 个结果对应的最近元素添加到选择`);
-  } else {
-      showTemporaryMessage('没有新的元素被添加到选择中');
+    isViewingChildren = false;
   }
 }

@@ -1,109 +1,203 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="extensionName">TreeClip 文本批量选择器</title>
-    <style>
-        body {
-            font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-            width: 300px;
-            padding: 15px;
-            margin: 0;
-            background-color: #f5f5f5;
-            color: #333;
-        }
-        .container {
-            background-color: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            padding: 15px;
-        }
-        h2 {
-            margin-top: 0;
-            color: #2c3e50;
-            font-size: 16px;
-            font-weight: bold;
-            border-bottom: 1px solid #eee;
-            padding-bottom: 8px;
-        }
-        .instruction {
-            display: flex;
-            align-items: center;
-            margin: 15px 0;
-            background-color: #e8f4fc;
-            padding: 12px;
-            border-radius: 6px;
-            border-left: 4px solid #3498db;
-        }
-        .key {
-            background-color: #3498db;
-            color: white;
-            padding: 2px 8px;
-            border-radius: 4px;
-            margin-right: 8px;
-            font-weight: bold;
-        }
-        .feature-list {
-            margin-top: 15px;
-        }
-        .feature-item {
-            margin-bottom: 6px;
-            position: relative;
-            padding-left: 18px;
-        }
-        .feature-item:before {
-            content: "•";
-            color: #3498db;
-            position: absolute;
-            left: 0;
-            font-size: 18px;
-            line-height: 1;
-        }
-        .footer {
-            margin-top: 15px;
-            text-align: center;
-            font-size: 12px;
-            color: #7f8c8d;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="extensionName">TreeClip 文本批量选择器</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --brand-green: #2fae5b;
+      --brand-blue: #1976d2;
+      --green-soft: rgba(47, 174, 91, 0.09);
+      --blue-soft: rgba(25, 118, 210, 0.08);
+      --ios-bg: #f5f7f8;
+      --ios-card: rgba(255, 255, 255, 0.97);
+      --ios-text: #1d2725;
+      --ios-secondary: #64716e;
+      --ios-tertiary: #8a9492;
+      --ios-separator: rgba(55, 72, 68, 0.12);
+    }
+
+    /* Green = selection and features. Blue = controls and navigation. */
+
+    * { box-sizing: border-box; }
+    html, body { width: 368px; margin: 0; }
+    html { background: var(--ios-card); }
+    body {
+      color: var(--ios-text);
+      background: var(--ios-card);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+      font-size: 13px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button { font: inherit; }
+    .page { padding: 0; }
+    .popup-shell { overflow: hidden; padding-bottom: 14px; background: var(--ios-card); }
+    .toolbar { display: flex; min-height: 40px; padding: 6px 8px; align-items: center; justify-content: space-between; gap: 6px; border-bottom: 1px solid var(--ios-separator); }
+    .toolbar-group { display: flex; min-width: 0; align-items: center; gap: 4px; }
+    .toolbar-action {
+      display: inline-flex;
+      height: 27px;
+      padding: 0 6px;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      border: 1px solid rgba(55, 72, 68, 0.09);
+      border-radius: 8px;
+      color: var(--ios-secondary);
+      background: rgba(255, 255, 255, 0.66);
+      box-shadow: 0 1px 2px rgba(26, 41, 37, 0.035);
+      cursor: pointer;
+      text-decoration: none;
+      transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease;
+    }
+    .toolbar-action:hover { border-color: rgba(25, 118, 210, 0.16); color: var(--brand-blue); background: var(--blue-soft); }
+    .toolbar-action:active { transform: translateY(1px); }
+    .toolbar-action-icon { display: grid; width: 14px; height: 14px; flex: 0 0 14px; place-items: center; }
+    .toolbar-action-icon svg { display: block; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+    .toolbar-action-icon--github svg { fill: currentColor; stroke: none; }
+    .toolbar-action-label { overflow: hidden; font-size: 10.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .toolbar-action--icon { width: 27px; padding-inline: 6px; overflow: hidden; gap: 0; transition: width 160ms ease, gap 160ms ease, border-color 120ms ease, background-color 120ms ease, transform 120ms ease; }
+    .toolbar-action--icon .toolbar-action-label { max-width: 0; opacity: 0; transition: max-width 160ms ease, opacity 120ms ease; }
+    .toolbar-action--icon:hover, .toolbar-action--icon:focus-visible { width: 78px; gap: 4px; }
+    .toolbar-action--icon:hover .toolbar-action-label, .toolbar-action--icon:focus-visible .toolbar-action-label { max-width: 52px; opacity: 1; }
+    .language-toggle { min-width: 32px; padding-inline: 6px; color: var(--brand-blue); font-size: 10.5px; font-weight: 760; }
+    .brand-row { display: flex; min-height: 46px; padding: 5px 14px; align-items: center; gap: 8px; border-bottom: 1px solid var(--ios-separator); }
+    .app-icon { width: 32px; height: 32px; flex: 0 0 32px; object-fit: contain; }
+    h1 { overflow: hidden; margin: 0; color: #152721; font-size: 16.5px; font-weight: 740; letter-spacing: -0.2px; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
+    .sr-only { position: absolute; overflow: hidden; width: 1px; height: 1px; padding: 0; border: 0; margin: -1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+    .popup-content { padding: 3px 14px 0; }
+    .section-label { margin: 7px 12px 3px; color: var(--ios-secondary); font-size: 10.5px; font-weight: 650; letter-spacing: 0.25px; text-transform: uppercase; }
+    .card { overflow: hidden; border: 0.5px solid rgba(0, 0, 0, 0.035); border-radius: 14px; background: var(--ios-card); box-shadow: 0 1px 1px rgba(0, 0, 0, 0.025); }
+
+    .start-banner { display: flex; min-height: 36px; padding: 6px 10px; align-items: center; gap: 8px; color: var(--brand-blue); background: var(--blue-soft); }
+    .key { padding: 4px 8px; border-radius: 7px; color: #fff; background: var(--brand-blue); box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.12); font-size: 11px; font-weight: 750; }
+    .start-banner strong { font-size: 11.5px; font-weight: 580; }
+    .mode-list, .guide-list { padding-left: 12px; }
+    .mode-row { display: grid; min-height: 40px; padding: 4px 12px 4px 0; grid-template-columns: 28px 1fr auto; align-items: center; gap: 8px; border-top: 0.5px solid var(--ios-separator); color: inherit; cursor: default; text-decoration: none; }
+    .mode-icon { display: grid; width: 27px; height: 27px; place-items: center; border-radius: 8px; color: #fff; background: var(--brand-green); font-size: 11px; font-weight: 760; }
+    .mode-copy, .guide-copy { min-width: 0; }
+    .mode-title, .guide-title { display: block; margin-bottom: 2px; font-size: 12px; font-weight: 650; transition: color 120ms ease; }
+    .mode-row:hover .mode-title, .mode-row:focus-visible .mode-title, .guide-row:hover .guide-title, .guide-row:focus-visible .guide-title { color: var(--brand-blue); }
+    .mode-desc, .guide-desc { display: block; overflow: hidden; color: var(--ios-secondary); font-size: 10.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+    .mode-key { padding: 3px 6px; border-radius: 6px; color: var(--brand-blue); background: var(--blue-soft); font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; font-weight: 700; }
+
+    .guide-row { display: grid; min-height: 40px; padding: 4px 12px 4px 0; grid-template-columns: 29px 1fr; align-items: center; gap: 8px; border-top: 0.5px solid var(--ios-separator); color: inherit; cursor: default; text-decoration: none; }
+    .guide-row:first-child { border-top: 0; }
+    .guide-icon { display: grid; width: 27px; height: 27px; place-items: center; border-radius: 8px; color: var(--brand-green); background: var(--green-soft); font-size: 13px; font-weight: 700; }
+
+    .panel-status { display: none; margin: 0; padding: 0 14px; color: #ff3b30; font-size: 10.5px; text-align: center; }
+    .panel-status.visible { display: block; margin-top: 4px; }
+
+    @media (prefers-color-scheme: dark) {
+      :root { --brand-green: #56c879; --brand-blue: #5aa7ee; --green-soft: rgba(86, 200, 121, 0.12); --blue-soft: rgba(90, 167, 238, 0.12); --ios-bg: #101513; --ios-card: rgba(27, 34, 32, 0.97); --ios-text: #f0f4f3; --ios-secondary: #aab3b1; --ios-tertiary: #828c89; --ios-separator: rgba(100, 116, 111, 0.32); }
+      body { background: var(--ios-card); }
+      h1 { color: var(--ios-text); }
+      .toolbar-action { border-color: rgba(255, 255, 255, 0.07); background: rgba(255, 255, 255, 0.04); }
+      .card { border-color: rgba(255, 255, 255, 0.04); }
+      .start-banner { color: var(--brand-blue); }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0.01ms !important; } }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <h2 data-i18n="extensionName">TreeClip 文本批量选择器</h2>
-
-        <div class="instruction">
-            <span class="key">Shift</span> + <strong data-i18n="popup_instruction_desc">点击/框选 网页元素启用选择器</strong>
+  <main class="page">
+    <div class="popup-shell">
+      <nav class="toolbar" aria-label="Popup actions">
+        <div class="toolbar-group">
+          <a class="toolbar-action" href="https://treeclip.dev/docs#quick-start" target="_blank" rel="noreferrer" data-doc-anchor="#quick-start">
+            <span class="toolbar-action-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"></circle><path d="M6.7 6.2A1.5 1.5 0 0 1 8.2 5c1 0 1.8.7 1.8 1.6 0 1.2-1.4 1.4-1.7 2.3"></path><path d="M8.2 11.5h.01"></path></svg></span>
+            <span class="toolbar-action-label" data-i18n="popup_guide_button">操作指南</span>
+          </a>
+          <button class="toolbar-action" type="button" data-panel="shortcuts">
+            <span class="toolbar-action-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M5.5 5.5H4.2a2 2 0 1 1 2-2v8.8a2 2 0 1 1-2-2h7.6a2 2 0 1 1-2 2V3.5a2 2 0 1 1 2 2H5.5Z"></path></svg></span>
+            <span class="toolbar-action-label" data-i18n="popup_shortcuts_button">快捷键</span>
+          </button>
         </div>
-
-        <div class="feature-list">
-            <div class="feature-item" data-i18n="popup_feature_click">点选：按住Shift点击选择单个元素</div>
-            <div class="feature-item" data-i18n="popup_feature_batch">批量：选中后按F键批量选择同类元素</div>
-            <div class="feature-item" data-i18n="popup_feature_rect">框选：按住Shift拖动鼠标选择区域</div>
-            <div class="feature-item" data-i18n="popup_feature_search">文本搜索：支持通配符模式搜索</div>
-            <div class="feature-item" data-i18n="popup_feature_clean">文本清理：自定义输出格式与清理选项</div>
+        <div class="toolbar-group">
+          <a class="toolbar-action toolbar-action--icon" href="https://treeclip.dev" target="_blank" rel="noreferrer" aria-label="Website" title="Website" data-i18n-aria-label="popup_website_link" data-i18n-title="popup_website_link">
+            <span class="toolbar-action-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"></circle><path d="M2 8h12M8 2a9.2 9.2 0 0 1 0 12M8 2a9.2 9.2 0 0 0 0 12"></path></svg></span>
+            <span class="toolbar-action-label" data-i18n="popup_website_link">Website</span>
+          </a>
+          <a class="toolbar-action toolbar-action--icon" href="https://github.com/bluishwu/TreeClip" target="_blank" rel="noreferrer" aria-label="GitHub" title="GitHub" data-i18n-aria-label="popup_github_link" data-i18n-title="popup_github_link">
+            <span class="toolbar-action-icon toolbar-action-icon--github" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 .8a7.4 7.4 0 0 0-2.34 14.42c.37.07.5-.16.5-.35v-1.44c-2.07.45-2.5-.88-2.5-.88-.34-.86-.83-1.1-.83-1.1-.68-.46.05-.45.05-.45.75.05 1.15.77 1.15.77.67 1.15 1.76.82 2.19.63.07-.48.26-.82.48-1-1.65-.19-3.39-.83-3.39-3.67 0-.81.29-1.48.77-2-.08-.19-.34-.95.07-1.97 0 0 .63-.2 2.04.77A7.1 7.1 0 0 1 8 4.48c.63 0 1.26.08 1.86.25 1.42-.97 2.04-.77 2.04-.77.41 1.02.15 1.78.07 1.97.48.52.77 1.19.77 2 0 2.85-1.74 3.48-3.4 3.67.27.23.51.69.51 1.4v1.87c0 .2.13.43.51.35A7.4 7.4 0 0 0 8 .8Z"></path></svg></span>
+            <span class="toolbar-action-label" data-i18n="popup_github_link">GitHub</span>
+          </a>
+          <a class="toolbar-action toolbar-action--icon" href="mailto:contact@treeclip.dev" aria-label="Email" title="Email" data-i18n-aria-label="popup_email_link" data-i18n-title="popup_email_link">
+            <span class="toolbar-action-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="3.5" width="12" height="9" rx="2"></rect><path d="m3 5 5 4 5-4"></path></svg></span>
+            <span class="toolbar-action-label" data-i18n="popup_email_link">Email</span>
+          </a>
+          <button class="toolbar-action language-toggle" type="button" data-popup-locale-toggle aria-label="Switch to English">EN</button>
         </div>
+      </nav>
 
-        <div class="feature-list" style="margin-top: 10px;">
-            <h3 style="font-size: 14px; color: #555; margin-bottom: 5px;" data-i18n="popup_shortcuts_title">常用快捷键</h3>
-            <div class="feature-item"><code>Shift + Click</code>: <span data-i18n="popup_shortcut_click">选择或取消选择单个元素。</span></div>
-            <div class="feature-item"><code>Shift + Drag</code>: <span data-i18n="popup_shortcut_drag">绘制矩形框进行框选。</span></div>
-            <div class="feature-item"><code>Shift + Click Label</code>: <span data-i18n="popup_shortcut_type">取消选择整个类型的元素。</span></div>
-            <div class="feature-item"><code>Esc</code>: <span data-i18n="popup_shortcut_esc">清除所有选择，退出选择模式。</span></div>
-            <div class="feature-item"><code>F</code>: <span data-i18n="popup_shortcut_f">选择所有类型相同的元素。</span></div>
-            <div class="feature-item"><code>Shift+↑/↓</code>: <span data-i18n="popup_shortcut_nav">层级导航</span></div>
-            <div class="feature-item"><code>Shift+→/←</code>: <span data-i18n="popup_shortcut_internal">进/出内部元素</span></div>
-            <div class="feature-item"><code>Shift+Click Hierarchy</code>: <span data-i18n="popup_shortcut_binding">层级绑定，将后续选择范围精确限定在该父层级下。</span></div>
-        </div>
+      <header class="brand-row">
+        <img class="app-icon" src="icons/icon128.png" alt="">
+        <h1 data-i18n="extensionName">TreeClip 文本批量选择器</h1>
+        <p class="sr-only" data-i18n="popup_subtitle">更轻巧地选择、整理并复制网页文本</p>
+      </header>
 
-        <div class="feature-list" style="margin-top: 10px;">
-            <h3 style="font-size: 14px; color: #555; margin-bottom: 5px;" data-i18n="popup_search_tips_title">搜索语法提示</h3>
-            <div class="feature-item"><code>*</code> : <span data-i18n="popup_search_any">匹配任意多个字符</span></div>
-            <div class="feature-item"><code>?</code> : <span data-i18n="popup_search_single">匹配单个字符</span></div>
-            <div class="feature-item"><code>[a,b,c]</code> : <span data-i18n="popup_search_list">匹配括号内任一项</span></div>
-            <div class="feature-item"><code>"..."</code> : <span data-i18n="popup_search_literal">按字面文本匹配</span></div>
-        </div>
+      <div class="popup-content">
+        <div class="section-label" data-i18n="popup_quick_start">快速开始</div>
+        <section class="card">
+      <div class="start-banner"><span class="key">Shift</span><strong data-i18n="popup_instruction_desc">按住 Shift 开始选择网页文本</strong></div>
+      <div class="mode-list">
+        <a class="mode-row" href="https://treeclip.dev/docs#basic-selection" target="_blank" rel="noreferrer" data-doc-anchor="#basic-selection" data-i18n-title="popup_feature_click_desc">
+          <span class="mode-icon">•••</span>
+          <span class="mode-copy"><span class="mode-title" data-i18n="popup_feature_click">多点选择</span><span class="mode-desc" data-i18n="popup_feature_click_desc">连续点击多个分散的文本块</span></span>
+          <span class="mode-key">Click</span>
+        </a>
+        <a class="mode-row" href="https://treeclip.dev/docs#basic-selection" target="_blank" rel="noreferrer" data-doc-anchor="#basic-selection" data-i18n-title="popup_feature_rect_desc">
+          <span class="mode-icon">▱</span>
+          <span class="mode-copy"><span class="mode-title" data-i18n="popup_feature_rect">区域框选</span><span class="mode-desc" data-i18n="popup_feature_rect_desc">拖动矩形，一次选择区域内文本</span></span>
+          <span class="mode-key">Drag</span>
+        </a>
+        <a class="mode-row" href="https://treeclip.dev/docs#basic-selection" target="_blank" rel="noreferrer" data-doc-anchor="#basic-selection" data-i18n-title="popup_feature_batch_desc">
+          <span class="mode-icon">F</span>
+          <span class="mode-copy"><span class="mode-title" data-i18n="popup_feature_batch">同类文本</span><span class="mode-desc" data-i18n="popup_feature_batch_desc">先选一个样本，再按 F 扩展同类</span></span>
+          <span class="mode-key">F</span>
+        </a>
+      </div>
+        </section>
+
+        <div class="section-label" data-i18n="popup_advanced_title">进阶选项</div>
+        <section class="card guide-list">
+      <a class="guide-row" href="https://treeclip.dev/docs#advanced-selection" target="_blank" rel="noreferrer" data-doc-anchor="#advanced-selection" data-i18n-title="popup_advanced_hierarchy_desc">
+        <span class="guide-icon">↕</span>
+        <span class="guide-copy"><span class="guide-title" data-i18n="popup_advanced_hierarchy_title">层级切换</span><span class="guide-desc" data-i18n="popup_advanced_hierarchy_desc">扩大或缩小文本范围，精确控制最终复制内容。</span></span>
+      </a>
+      <a class="guide-row" href="https://treeclip.dev/docs#advanced-selection" target="_blank" rel="noreferrer" data-doc-anchor="#advanced-selection" data-i18n-title="popup_advanced_binding_desc">
+        <span class="guide-icon">⌘</span>
+        <span class="guide-copy"><span class="guide-title" data-i18n="popup_advanced_binding_title">层级绑定</span><span class="guide-desc" data-i18n="popup_advanced_binding_desc">将同类选择限定在指定父层级下，排除其他区域。</span></span>
+      </a>
+      <a class="guide-row" href="https://treeclip.dev/docs#advanced-selection" target="_blank" rel="noreferrer" data-doc-anchor="#advanced-selection" data-i18n-title="popup_advanced_internal_desc">
+        <span class="guide-icon">↳</span>
+        <span class="guide-copy"><span class="guide-title" data-i18n="popup_advanced_internal_title">块内字段</span><span class="guide-desc" data-i18n="popup_advanced_internal_desc">从复合文本块中提取子字段。</span></span>
+      </a>
+        </section>
+
+        <div class="section-label" data-i18n="popup_more_title">更多功能</div>
+        <section class="card guide-list">
+      <a class="guide-row" href="https://treeclip.dev/docs#output-settings" target="_blank" rel="noreferrer" data-doc-anchor="#output-settings" data-i18n-title="popup_more_output_desc">
+        <span class="guide-icon">≡</span>
+        <span class="guide-copy"><span class="guide-title" data-i18n="popup_more_output_title">输出设置</span><span class="guide-desc" data-i18n="popup_more_output_desc">设置分隔与清理规则，并支持去重和实时复制。</span></span>
+      </a>
+      <a class="guide-row" href="https://treeclip.dev/docs#shortcuts" target="_blank" rel="noreferrer" data-doc-anchor="#shortcuts" data-i18n-title="popup_more_shortcuts_desc">
+        <span class="guide-icon">⌨</span>
+        <span class="guide-copy"><span class="guide-title" data-i18n="popup_more_shortcuts_title">快捷键配置</span><span class="guide-desc" data-i18n="popup_more_shortcuts_desc">自定义选择、同类扩展和复制快捷键。</span></span>
+      </a>
+      <a class="guide-row" href="https://treeclip.dev/docs#panel-modes" target="_blank" rel="noreferrer" data-doc-anchor="#panel-modes" data-i18n-title="popup_more_panel_desc">
+        <span class="guide-icon">▤</span>
+        <span class="guide-copy"><span class="guide-title" data-i18n="popup_more_panel_title">多形态面板</span><span class="guide-desc" data-i18n="popup_more_panel_desc">切换详情、标准或极简模式，并可移动和吸附面板。</span></span>
+      </a>
+        </section>
+
+      </div>
+      <div class="panel-status" id="panel-status" role="status" aria-live="polite" data-i18n="popup_panel_unavailable">当前页面无法打开 TreeClip 浮层</div>
     </div>
-    <script src="popup.js"></script>
+  </main>
+  <script src="popup.js"></script>
 </body>
 </html>

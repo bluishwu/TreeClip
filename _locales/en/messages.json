@@ -3,25 +3,25 @@
     "message": "TreeClip - Batch Text Selector"
   },
   "extensionDescription": {
-    "message": "Powerful batch text selection tool. Use Shift+Click/Rect Select/F Key/Search to easily select multiple elements and extract text. Features hierarchy navigation, internal element selection, hierarchy binding, and custom output formats."
+    "message": "Batch-select web text using similar, point, or box selection, with hierarchy controls, block fields, and custom output formats."
   },
   "actionTitle": {
     "message": "TreeClip - Batch Text Selector"
   },
   "msg_copied": {
-    "message": "Copied selected content to clipboard"
+    "message": "Copied the selected text to the clipboard"
   },
   "msg_copy_failed": {
     "message": "Failed to copy to clipboard"
   },
   "msg_no_content": {
-    "message": "No content to copy"
+    "message": "The selected text blocks contain no text to copy"
   },
   "prompt_batch_select": {
-    "message": "Similar elements detected"
+    "message": "Text blocks with the same structure detected"
   },
   "prompt_batch_select_desc": {
-    "message": "Batch select all $DESC$ elements?",
+    "message": "Select every text block with the same structure as $DESC$?",
     "placeholders": {
       "desc": {
         "content": "$1"
@@ -29,7 +29,7 @@
     }
   },
   "btn_select_all": {
-    "message": "Select All"
+    "message": "Select Similar Text"
   },
   "btn_cancel": {
     "message": "Cancel"
@@ -38,7 +38,7 @@
     "message": "Don't show again"
   },
   "msg_select_at_least_one": {
-    "message": "Select at least one element first. $KEY$ key will select all similar elements.",
+    "message": "Select one text block first; press $KEY$ to expand to structurally similar text.",
     "placeholders": {
       "key": {
         "content": "$1"
@@ -46,99 +46,170 @@
     }
   },
   "msg_no_internal_elements": {
-    "message": "This element has no selectable child elements"
+    "message": "This text block has no distinct fields to extract"
   },
   "tip_internal_links": {
-    "message": "🔍 Internal links detected"
+    "message": "🔍 Link found inside this text block"
   },
   "tip_internal_links_desc": {
-    "message": "This selector found a unique link child element in the current element"
+    "message": "This text block contains one link whose text can be selected separately"
   },
   "btn_view_internal_links": {
-    "message": "View internal links"
+    "message": "Select Link Text"
   },
   "popup_instruction_desc": {
-    "message": "to enable selector"
+    "message": "Hold Shift to start selecting web text"
   },
   "popup_feature_click": {
-    "message": "Click: Shift+Click to select single element"
+    "message": "Multi-select"
+  },
+  "popup_feature_click_desc": {
+    "message": "Click several text blocks across the page"
   },
   "popup_feature_batch": {
-    "message": "Batch: Press F after selecting to select similar"
+    "message": "Similar text"
+  },
+  "popup_feature_batch_desc": {
+    "message": "Pick one sample, then press F to expand"
   },
   "popup_feature_rect": {
-    "message": "Rect: Shift+Drag to select area"
+    "message": "Area select"
   },
-  "popup_feature_search": {
-    "message": "Search: Supports wildcard pattern search"
+  "popup_feature_rect_desc": {
+    "message": "Drag a rectangle around the text you need"
   },
-  "popup_feature_clean": {
-    "message": "Clean: Custom output formats and cleaning"
+  "popup_subtitle": {
+    "message": "Select, organize, and copy web text with less effort"
   },
-  "popup_shortcuts_title": {
-    "message": "Common Shortcuts"
+  "popup_quick_start": {
+    "message": "Quick Start"
   },
-  "popup_search_tips_title": {
-    "message": "Search Syntax Tips"
+  "popup_advanced_title": {
+    "message": "Advanced Options"
   },
-  "popup_shortcut_click": {
-    "message": "Select/deselect single element."
-  },
-  "popup_shortcut_drag": {
-    "message": "Draw rectangle to select area."
-  },
-  "popup_shortcut_type": {
-    "message": "Deselect whole element type."
-  },
-  "popup_shortcut_esc": {
-    "message": "Clear all selections and exit."
-  },
-  "popup_shortcut_f": {
-    "message": "Select all similar elements."
-  },
-  "popup_shortcut_nav": {
+  "popup_advanced_hierarchy_title": {
     "message": "Hierarchy navigation"
   },
-  "popup_shortcut_internal": {
-    "message": "Enter/Exit internal elements"
+  "popup_advanced_hierarchy_desc": {
+    "message": "Expand or narrow the text scope to control exactly what gets copied."
   },
-  "popup_shortcut_binding": {
-    "message": "Hierarchy binding, limit selection to this parent."
+  "popup_advanced_binding_title": {
+    "message": "Hierarchy binding"
   },
-  "popup_search_any": {
-    "message": "Match any number of characters"
+  "popup_advanced_binding_desc": {
+    "message": "Limit similar selection to a chosen parent and exclude other areas."
   },
-  "popup_search_single": {
-    "message": "Match single character"
+  "popup_advanced_internal_title": {
+    "message": "Block fields"
   },
-  "popup_search_list": {
-    "message": "Match any item in brackets"
+  "popup_advanced_internal_desc": {
+    "message": "Extract child fields from a composite text block."
   },
-  "popup_search_literal": {
-    "message": "Match text literally"
+  "popup_more_title": {
+    "message": "More Features"
   },
-  "ui_selected_count": {
-    "message": "$COUNT$ elements selected",
-    "placeholders": {
-      "count": {
-        "content": "$1"
-      }
-    }
+  "popup_more_output_title": {
+    "message": "Output settings"
+  },
+  "popup_more_output_desc": {
+    "message": "Set separators and cleanup rules, with deduplication and real-time copy."
+  },
+  "popup_more_shortcuts_title": {
+    "message": "Shortcut configuration"
+  },
+  "popup_more_shortcuts_desc": {
+    "message": "Customize shortcuts for selection, similar expansion, and copying."
+  },
+  "popup_more_panel_title": {
+    "message": "Flexible panel modes"
+  },
+  "popup_more_panel_desc": {
+    "message": "Switch between detail, standard, or minimal mode, then move or dock the panel."
+  },
+  "popup_guide_button": {
+    "message": "Guide"
+  },
+  "popup_shortcuts_button": {
+    "message": "Shortcuts"
+  },
+  "popup_website_link": {
+    "message": "Website"
+  },
+  "popup_github_link": {
+    "message": "GitHub"
+  },
+  "popup_email_link": {
+    "message": "Email"
+  },
+  "popup_panel_unavailable": {
+    "message": "TreeClip panels are unavailable on this page"
   },
   "ui_selected_elements": {
     "message": "Selected"
   },
+  "ui_selected_short": {
+    "message": "Selected"
+  },
+  "ui_action_bar_label": {
+    "message": "Text selection actions"
+  },
+  "ui_btn_select_similar": {
+    "message": "Similar"
+  },
+  "ui_select_similar_hint": {
+    "message": "Expand to similar text by page structure ($KEY$)",
+    "placeholders": {
+      "key": {
+        "content": "$1"
+      }
+    }
+  },
+  "ui_copy_hint": {
+    "message": "Copy selected text to the clipboard ($KEY$)",
+    "placeholders": {
+      "key": {
+        "content": "$1"
+      }
+    }
+  },
+  "ui_btn_more": {
+    "message": "More"
+  },
+  "ui_btn_toggle_compact": {
+    "message": "Switch compact action mode"
+  },
+  "ui_btn_hide_details": {
+    "message": "Hide"
+  },
+  "ui_btn_clear": {
+    "message": "Clear all selections"
+  },
+  "ui_details_title": {
+    "message": "Selection Details"
+  },
+  "ui_drag_to_close": {
+    "message": "Pull to resize; click to change display mode"
+  },
+  "ui_move_box": {
+    "message": "Drag the empty area to move the selection panel"
+  },
+  "ui_groups_title": {
+    "message": "Selected Text Groups"
+  },
+  "ui_group_hint": {
+    "message": "Click to focus a group; Shift+click removes the group"
+  },
+  "ui_no_text_preview": {
+    "message": "No text preview"
+  },
   "ui_click_to_expand": {
     "message": "Expand"
   },
+  "ui_collapse_middle_levels": {
+    "message": "Collapse middle levels"
+  },
   "ui_hierarchy": {
-    "message": "Hierarchy"
-  },
-  "ui_collapse": {
-    "message": "Collapse"
-  },
-  "ui_expand": {
-    "message": "Expand"
+    "message": "Text Boundary Level"
   },
   "ui_omit_levels": {
     "message": "Omit $COUNT$ levels",
@@ -161,34 +232,28 @@
     "message": "Top"
   },
   "ui_viewing_internal": {
-    "message": "Viewing internal content"
+    "message": "Select a Field Inside the Block"
   },
   "ui_internal_elements": {
-    "message": "Internal Elements"
-  },
-  "ui_click_to_select": {
-    "message": "Click to Select"
+    "message": "Available Fields"
   },
   "ui_internal_desc": {
-    "message": "Selecting internal elements will only change current group"
+    "message": "Choose a distinct title, price, link, or other field from the current text block"
   },
   "ui_shortcut_nav_hint": {
-    "message": "Shortcuts: Shift+← Back, ESC Cancel"
+    "message": "Shortcuts: Shift+← outer text, ESC clear selection"
   },
   "ui_btn_back": {
     "message": "Back"
-  },
-  "ui_btn_cancel": {
-    "message": "Cancel"
   },
   "ui_btn_copy": {
     "message": "Copy"
   },
   "ui_current_selector": {
-    "message": "Selector"
+    "message": "Structure Selector"
   },
   "ui_output_settings": {
-    "message": "Output Settings"
+    "message": "Text Output Settings"
   },
   "ui_clipboard_sep": {
     "message": "Clipboard Separator"
@@ -204,6 +269,9 @@
   },
   "ui_clean_options": {
     "message": "Text Cleaning"
+  },
+  "ui_copy_behavior": {
+    "message": "Copy Behavior"
   },
   "ui_clean_spaces": {
     "message": "Spaces"
@@ -232,71 +300,74 @@
   "ui_realtime_copy_desc": {
     "message": "Auto-copy to clipboard"
   },
-  "ui_search_title": {
-    "message": "Text/Pattern Search"
-  },
-  "ui_search_help": {
-    "message": "Search Syntax:\n* - Match any number of chars (e.g. data*analysis)\n? - Match single char (e.g. page?)\n[a,b,c] - Match any in brackets (e.g. [1,2,3])\n\"...\" - Match literally (e.g. \"[1,2]\")"
-  },
-  "ui_search_input_placeholder": {
-    "message": "Enter text or pattern (*=any, ?=single)"
-  },
-  "ui_search_btn": {
-    "message": "Search"
-  },
-  "ui_search_prev": {
-    "message": "Prev"
-  },
-  "ui_search_next": {
-    "message": "Next"
-  },
-  "ui_search_add_all": {
-    "message": "Add All"
-  },
   "ui_btn_internal": {
-    "message": "Internal"
+    "message": "Block Fields"
   },
-  "ui_btn_guide": {
-    "message": "Guide"
+  "guide_bind_level": {
+    "message": "Limit future similar selections to that parent level"
   },
   "ui_btn_shortcuts": {
     "message": "Keys"
   },
-  "ui_btn_minimize": {
-    "message": "Min"
-  },
-  "ui_selected": {
-    "message": "Selected"
-  },
   "ui_current_element": {
-    "message": "Current"
-  },
-  "ui_copy_title": {
-    "message": "Copy selected content (Ctrl+C)"
+    "message": "Current Text Source"
   },
   "ui_shortcuts_config": {
     "message": "Shortcuts Config"
   },
+  "shortcut_reference_title": {
+    "message": "Fixed Shortcut Guide"
+  },
+  "shortcut_hierarchy_desc": {
+    "message": "Move up or down through text hierarchy levels"
+  },
+  "shortcut_fields_desc": {
+    "message": "Enter or leave block-field selection"
+  },
+  "shortcut_bind_label": {
+    "message": "Shift + click level"
+  },
+  "shortcut_switch_group_label": {
+    "message": "Click group"
+  },
+  "shortcut_switch_group_desc": {
+    "message": "Switch the active text group"
+  },
+  "shortcut_remove_group_label": {
+    "message": "Shift + click group"
+  },
+  "shortcut_remove_group_desc": {
+    "message": "Remove that text group"
+  },
+  "shortcut_clear_desc": {
+    "message": "Clear all selected text"
+  },
+  "shortcut_edit_help": {
+    "message": "Click a key box above to record a custom shortcut; press Enter to finish, then save."
+  },
+  "ui_close": {
+    "message": "Close"
+  },
   "ui_select_key": {
-    "message": "Select Key"
+    "message": "Text Selection Key"
   },
   "ui_conflict_warning": {
     "message": "⚠️ Conflict with other shortcuts"
   },
   "ui_select_key_desc": {
-    "message": "Used for \"Select Key + Click/Drag\";<br>Hierarchy binding still uses Shift"
+    "message": "Used to click or box-select text blocks;<br>hierarchy actions still use Shift"
   },
   "ui_type_select_key": {
-    "message": "Select Similar Key"
+    "message": "Similar Text Key"
   },
   "ui_type_select_key_desc": {
-    "message": "Used to select all similar elements"
+    "message": "Expands to similar text blocks by page structure"
   },
   "ui_copy_key": {
     "message": "Copy Shortcut"
   },
   "ui_copy_key_desc": {
-    "message": "Used to copy all selected content"
+    "message": "Copies all selected text"
   },
   "ui_reset_defaults": {
     "message": "Reset Defaults"
@@ -307,27 +378,13 @@
   "ui_press_keys_to_capture": {
     "message": "Press key combination... (Enter to finish)"
   },
-  "ui_saved": {
-    "message": "Saved"
-  },
   "ui_saved_success": {
     "message": "Saved successfully"
   },
   "ui_no_changes": {
     "message": "No changes"
   },
-  "ui_no_results": {
-    "message": "No results"
-  },
-  "ui_search_result_count": {
-    "message": "Result $CURRENT$ / $TOTAL$",
-    "placeholders": {
-      "current": {
-        "content": "$1"
-      },
-      "total": {
-        "content": "$2"
-      }
-    }
+  "msg_invalid_hierarchy_binding": {
+    "message": "An outer text boundary cannot be bound to a deeper structure"
   }
 }
