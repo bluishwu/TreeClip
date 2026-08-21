@@ -8,7 +8,7 @@
   <a href="#english"><img src="https://img.shields.io/badge/English-0969DA?style=flat-square&amp;logo=googletranslate&amp;logoColor=white" alt="Switch to English"></a>
 </p>
 
-https://github.com/user-attachments/assets/c098f113-2f90-4d44-a4c6-f4ec5005239e
+https://github.com/user-attachments/assets/4e84e613-b10f-49ac-8ec2-3f196cac0f7f
 
 <a id="中文"></a>
 
